@@ -8,7 +8,7 @@ It runs on macOS and Linux and needs an mcp-tg daemon serving MCP over streamabl
 
 1. Each poll cycle opens one short MCP session to mcp-tg: `tg_dialogs_list`, then `tg_messages_list` for every dialog that has unread messages, is named by a rule, or has not been seen before. The session is closed with an HTTP `DELETE` at the end of the cycle.
 2. Each new message is checked against the rules in order. The first rule that matches decides the message's trust tier. A message that no rule matches is skipped and never shown to a model.
-3. An admitted message is marked read. It then gets a typing indicator, the last `history` messages of the chat as context, and one `claude -p --output-format json` run in the tier's working directory, with the tier's flags.
+3. An admitted message is marked read. It then gets a typing indicator, kept alive for the whole run, the last `history` messages of the chat as context, and one `claude -p --output-format json` run in the tier's working directory, with the tier's flags.
 4. The run's final text is posted as a reply to that message, in that chat. If the run fails or times out, `fallback_reply` is posted instead. If the result is empty, nothing is posted.
 
 When dispositif sees a chat for the first time, it skips messages dated before the process started and processes newer ones. So a restart with empty state does not answer old history, while a message that arrives in a new chat after start is still answered.
@@ -83,6 +83,7 @@ Top level:
 | `session_ttl_secs` | `86400` | how long a chat's Claude session is resumed |
 | `run_timeout_secs` | `900` | a run is killed after this and answered with `fallback_reply`; a run's whole process group is killed when it ends either way |
 | `history` | `15` | recent messages given to the run as context |
+| `typing_interval_secs` | `4` | how often the typing indicator is re-sent while a run works; Telegram drops it after about five seconds |
 | `preamble` | required | first part of every prompt |
 | `fallback_reply` | required, non-empty | posted when a run fails |
 

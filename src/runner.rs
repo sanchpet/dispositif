@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -86,7 +86,10 @@ pub fn handle(cfg: &Config, dir: &StateDir, sessions: &mut Sessions, ev: &Event)
             &cfg.allowlisted_senders(),
         ))
     })?;
-    let reply = match run_event(cfg, dir, sessions, ev, &ctx) {
+    let typing = Typing::start(cfg, &ev.peer);
+    let outcome = run_event(cfg, dir, sessions, ev, &ctx);
+    typing.stop();
+    let reply = match outcome {
         Ok(r) => r,
         Err(e) => {
             log(&format!("run failed peer={} msg={}: {e:#}", ev.peer, ev.id));
@@ -108,6 +111,53 @@ pub fn handle(cfg: &Config, dir: &StateDir, sessions: &mut Sessions, ev: &Event)
         )
     })?;
     Ok(())
+}
+
+/// Keeps the "typing…" indicator alive while a run works: Telegram shows it for
+/// about five seconds, so it is re-sent every `typing_interval_secs` until stopped.
+struct Typing {
+    stop: Arc<(Mutex<bool>, Condvar)>,
+    worker: thread::JoinHandle<()>,
+}
+
+impl Typing {
+    fn start(cfg: &Config, peer: &str) -> Self {
+        let stop = Arc::new((Mutex::new(false), Condvar::new()));
+        let (url, peer) = (cfg.mcp_url.clone(), peer.to_owned());
+        let every = Duration::from_secs(cfg.typing_interval_secs);
+        let flag = Arc::clone(&stop);
+        let worker = thread::spawn(move || {
+            let (lock, cv) = &*flag;
+            let mut done = lock.lock().unwrap_or_else(|e| e.into_inner());
+            loop {
+                let (guard, wait) = cv
+                    .wait_timeout(done, every)
+                    .unwrap_or_else(|e| e.into_inner());
+                done = guard;
+                if *done {
+                    return;
+                }
+                if wait.timed_out() {
+                    drop(done);
+                    let sent = with_session(&url, |mcp| {
+                        mcp.call("tg_typing_send", json!({"peer": peer})).map(drop)
+                    });
+                    if let Err(e) = sent {
+                        log(&format!("typing failed peer={peer}: {e:#}"));
+                    }
+                    done = lock.lock().unwrap_or_else(|e| e.into_inner());
+                }
+            }
+        });
+        Self { stop, worker }
+    }
+
+    fn stop(self) {
+        let (lock, cv) = &*self.stop;
+        *lock.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        cv.notify_all();
+        let _ = self.worker.join();
+    }
 }
 
 /// Context lines `[id] name (reply to N): text`, oldest first, up to `upto`.
