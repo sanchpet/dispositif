@@ -133,16 +133,12 @@ fn is_empty(v: &Value) -> bool {
     }
 }
 
-/// Parse a response body that is either plain JSON or an SSE stream. From a
-/// stream, the first JSON-RPC response (a message with `result` or `error`) wins,
-/// so a notification sent ahead of it is skipped.
+/// Parse a response body that is either plain JSON or an SSE stream. An SSE
+/// event's `data:` lines are joined with newlines and events with no data (a
+/// reconnection primer) are skipped. The first JSON-RPC response (a message
+/// with `result` or `error`) wins, so a notification sent ahead of it is skipped.
 pub fn parse_body(raw: &str) -> Result<Option<Value>> {
-    let events: Vec<&str> = raw
-        .lines()
-        .filter_map(|l| l.strip_prefix("data:"))
-        .map(str::trim_start)
-        .collect();
-    if events.is_empty() {
+    if !raw.lines().any(|l| l.starts_with("data:")) {
         if raw.trim().is_empty() {
             return Ok(None);
         }
@@ -150,9 +146,25 @@ pub fn parse_body(raw: &str) -> Result<Option<Value>> {
             serde_json::from_str(raw).context("response is not JSON")?,
         ));
     }
+    let mut events = Vec::new();
+    let mut data: Vec<&str> = Vec::new();
+    for line in raw.lines().chain([""]) {
+        if line.is_empty() {
+            let event = data.join("\n");
+            data.clear();
+            if !event.trim().is_empty() {
+                events.push(event);
+            }
+        } else if let Some(d) = line.strip_prefix("data:") {
+            data.push(d.strip_prefix(' ').unwrap_or(d));
+        }
+    }
     let mut parsed = Vec::with_capacity(events.len());
-    for e in events {
+    for e in &events {
         parsed.push(serde_json::from_str::<Value>(e).context("SSE data is not JSON")?);
+    }
+    if parsed.is_empty() {
+        return Ok(None);
     }
     let pick = parsed
         .iter()
@@ -194,6 +206,23 @@ mod tests {
             "data: {\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"n\":1}}\n\n",
         );
         assert_eq!(parse_body(raw).unwrap().unwrap()["id"], 4);
+    }
+
+    #[test]
+    fn sse_skips_empty_primer_event() {
+        let raw = "id: 1\ndata:\n\nevent: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{}}\n\n";
+        assert_eq!(parse_body(raw).unwrap().unwrap()["id"], 5);
+    }
+
+    #[test]
+    fn sse_joins_multiline_data() {
+        let raw = "event: message\ndata: {\"jsonrpc\":\"2.0\",\ndata: \"id\":6,\"result\":{}}\n\n";
+        assert_eq!(parse_body(raw).unwrap().unwrap()["id"], 6);
+    }
+
+    #[test]
+    fn sse_with_only_empty_data_is_none() {
+        assert!(parse_body("id: 1\ndata:\n\n").unwrap().is_none());
     }
 
     #[test]
