@@ -2,6 +2,7 @@
 name = "dispositif"
 version = "0.0.0"
 edition = "2024"
+rust-version = "1.88"
 license = "MIT"
 description = "Answer allowlisted Telegram messages with headless Claude Code runs, through an mcp-tg daemon"
 repository = "https://github.com/sanchpet/dispositif"
