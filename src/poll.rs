@@ -153,7 +153,8 @@ fn learn_reply_target(
 }
 
 /// One poll in its own short MCP session, then persist state. The session is
-/// closed whether or not the poll succeeded.
+/// closed and state saved whether or not the poll succeeded: events emitted
+/// before a failure must not be replayed after a restart.
 pub fn poll_cycle(
     mcp: &mut Mcp,
     cfg: &Config,
@@ -164,10 +165,10 @@ pub fn poll_cycle(
 ) -> Result<()> {
     let res = mcp
         .connect()
-        .and_then(|()| poll(mcp, cfg, state, started, on_event))
-        .and_then(|()| dir.save_state(state));
+        .and_then(|()| poll(mcp, cfg, state, started, on_event));
     mcp.close();
-    res
+    let saved = dir.save_state(state);
+    res.and(saved)
 }
 
 /// Poll health across cycles: a failure is reported once, and so is the recovery.

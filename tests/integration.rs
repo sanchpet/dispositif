@@ -335,6 +335,33 @@ fn failed_mark_read_does_not_readmit() {
 }
 
 #[test]
+fn events_before_a_failure_are_persisted() {
+    let fake = Fake::start();
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = config(&fake.url, "claude", "/tmp");
+    let dir = StateDir::new(tmp.path());
+    fake.set_dialog("1000002", "user", "Owner", 1);
+    fake.add_message("1000002", msg(3, 1000002, "new question", 1_100.0));
+    // The next dialog breaks the poll after the owner's message was emitted.
+    fake.set_dialog("-1000005", "chat", "Friends", 1);
+    fake.add_message("-1000005", json!({"text": "no id"}));
+    let mut events = Vec::new();
+    let res = poll_cycle(
+        &mut Mcp::new(&fake.url),
+        &cfg,
+        &dir,
+        &mut State::default(),
+        STARTED,
+        &mut |e| events.push(e.id),
+    );
+    assert!(res.is_err());
+    assert_eq!(events, [3]);
+    // A restart reads this state and must not answer message 3 again.
+    assert_eq!(dir.load_state().unwrap().last["1000002"], 3);
+    fake.assert_sessions_closed(&fake.take_log());
+}
+
+#[test]
 fn poll_failure_still_closes_session() {
     let fake = Fake::start();
     let tmp = tempfile::tempdir().unwrap();
