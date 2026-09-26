@@ -489,6 +489,26 @@ mod runner {
     }
 
     #[test]
+    fn failed_run_forgets_the_resumed_session() {
+        let _serial = serial();
+        let (_fake, tmp, cfg) = setup("exit 1");
+        let dir = StateDir::new(tmp.path().join("state"));
+        let mut sessions = Sessions::new();
+        sessions.insert(
+            "1000002:full".into(),
+            dispositif::state::Session {
+                id: "broken".into(),
+                at: dispositif::now(),
+            },
+        );
+        handle(&cfg, &dir, &mut sessions, &event()).unwrap();
+        let argv = std::fs::read_to_string(tmp.path().join("argv")).unwrap();
+        assert!(argv.ends_with("--resume\nbroken\n"), "{argv}");
+        assert!(sessions.is_empty());
+        assert!(dir.load_sessions().unwrap().is_empty());
+    }
+
+    #[test]
     fn error_result_posts_fallback() {
         let _serial = serial();
         let (fake, tmp, cfg) =

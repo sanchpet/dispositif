@@ -234,14 +234,30 @@ fn run_event(
         fresh_session(sessions, &key, cfg.session_ttl_secs, crate::now()).map(str::to_owned);
     let prompt = build_prompt(cfg, tier, ev, ctx);
     let cmd = build_command(cfg, tier, resume.as_deref());
-    let out = run_claude(cmd, prompt, Duration::from_secs(cfg.run_timeout_secs))?;
-    if out.is_error {
-        let msg = out.result.unwrap_or_default();
-        bail!("claude error: {}", truncate_chars(&msg, 300));
-    }
-    let session_id = out
-        .session_id
-        .ok_or_else(|| anyhow!("claude output has no session_id"))?;
+    let res = run_claude(cmd, prompt, Duration::from_secs(cfg.run_timeout_secs)).and_then(|out| {
+        if out.is_error {
+            let msg = out.result.unwrap_or_default();
+            bail!("claude error: {}", truncate_chars(&msg, 300));
+        }
+        let id = out
+            .session_id
+            .clone()
+            .ok_or_else(|| anyhow!("claude output has no session_id"))?;
+        Ok((out, id))
+    });
+    let (out, session_id) = match res {
+        Ok(r) => r,
+        Err(e) => {
+            // The session may be what broke the run; the next message starts fresh
+            // instead of resuming it until the TTL runs out.
+            if sessions.remove(&key).is_some()
+                && let Err(se) = dir.save_sessions(sessions)
+            {
+                log(&format!("saving sessions failed: {se:#}"));
+            }
+            return Err(e);
+        }
+    };
     sessions.insert(
         key,
         Session {
