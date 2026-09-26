@@ -94,6 +94,15 @@ fn default_history() -> u32 {
 }
 
 impl Config {
+    /// Everyone who can admit a message through some rule, plus the agent itself.
+    pub fn allowlisted_senders(&self) -> std::collections::HashSet<i64> {
+        self.rules
+            .iter()
+            .flat_map(|r| r.from.iter().copied())
+            .chain(std::iter::once(self.agent_id))
+            .collect()
+    }
+
     pub fn load(path: &Path) -> Result<Config> {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("reading config {}", path.display()))?;
