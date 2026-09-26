@@ -35,6 +35,8 @@ struct World {
     log: Vec<Req>,
     live: BTreeSet<String>,
     sessions_opened: usize,
+    /// This many tg_messages_mark_read calls fail before they succeed again.
+    fail_mark_read: usize,
 }
 
 struct Fake {
@@ -139,6 +141,13 @@ fn serve(
             assert!(w.live.contains(&sid), "call on dead session {sid}");
             let tool = rpc["params"]["name"].as_str().unwrap().to_owned();
             let args = rpc["params"]["arguments"].clone();
+            if tool == "tg_messages_mark_read" && w.fail_mark_read > 0 {
+                w.fail_mark_read -= 1;
+                w.log.push(Req::Call { sid, tool, args });
+                let body = json!({"jsonrpc": "2.0", "id": rpc["id"], "result": {
+                    "isError": true, "content": [{"type": "text", "text": "flood wait"}]}});
+                return Response::from_string(body.to_string());
+            }
             let result = tool_result(w, &tool, &args);
             w.log.push(Req::Call { sid, tool, args });
             // Plain JSON, with the result only in text content.
@@ -300,6 +309,29 @@ fn poll_admits_drops_and_closes_sessions() {
     fake.set_dialog("-1000005", "chat", "Friends", 0);
     fake.set_dialog("1000002", "user", "Owner", 0);
     assert!(poll_once(&fake, &cfg, &dir, &mut state).is_empty());
+}
+
+#[test]
+fn failed_mark_read_does_not_readmit() {
+    let fake = Fake::start();
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = config(&fake.url, "claude", "/tmp");
+    let dir = StateDir::new(tmp.path());
+    let mut state = State::default();
+    fake.set_dialog("1000002", "user", "Owner", 1);
+    fake.add_message("1000002", msg(3, 1000002, "new question", 1_100.0));
+    fake.world.lock().unwrap().fail_mark_read = 1;
+
+    let first = poll_once(&fake, &cfg, &dir, &mut state);
+    assert_eq!(first.iter().map(|e| e.id).collect::<Vec<_>>(), [3]);
+    assert_eq!(
+        Fake::calls(&fake.take_log(), "tg_messages_mark_read").len(),
+        1
+    );
+    // Still unread on the daemon side, so the dialog is fetched again.
+    let second = poll_once(&fake, &cfg, &dir, &mut state);
+    assert!(second.is_empty(), "answered twice: {second:?}");
+    assert_eq!(dir.load_state().unwrap().last["1000002"], 3);
 }
 
 #[test]

@@ -34,8 +34,8 @@ pub fn run(cfg: &Config, dir: &StateDir) -> Result<()> {
     log("runner started");
     loop {
         let mut events = Vec::new();
-        // Events collected before a mid-poll failure are still answered: they were
-        // already marked read and will not come back.
+        // Events collected before a mid-poll failure are still answered: `last`
+        // has moved past them, so they will not come back.
         match poll_cycle(&mut mcp, cfg, dir, &mut state, started, &mut |ev| {
             events.push(ev)
         }) {

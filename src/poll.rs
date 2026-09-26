@@ -91,26 +91,30 @@ pub fn poll(
         let is_dm = d.kind.as_deref() == Some("user");
         for m in msgs.iter().filter(|m| m.id > last) {
             learn_reply_target(mcp, cfg, peer, m, &mut agent_ids)?;
-            if let Some(rule) = match_rule(cfg, peer, m, &agent_ids, is_dm) {
-                on_event(Event {
-                    event: "message",
-                    trust: rule.trust.clone(),
-                    rule: rule.name.clone(),
-                    peer: peer.to_owned(),
-                    chat: d.title.as_deref().unwrap_or("").trim().to_owned(),
-                    id: m.id,
-                    from: m.from_name.clone(),
-                    from_id: m.from_id,
-                    reply_to: m.reply_to_id(),
-                    kind: m.kind.clone(),
-                    text: m.text().to_owned(),
-                });
-                mcp.call(
-                    "tg_messages_mark_read",
-                    json!({"peer": peer, "maxId": m.id}),
-                )?;
-            }
+            // Consumed before the mark: a failed mark must not bring the event back.
             state.last.insert(peer.to_owned(), m.id);
+            let Some(rule) = match_rule(cfg, peer, m, &agent_ids, is_dm) else {
+                continue;
+            };
+            on_event(Event {
+                event: "message",
+                trust: rule.trust.clone(),
+                rule: rule.name.clone(),
+                peer: peer.to_owned(),
+                chat: d.title.as_deref().unwrap_or("").trim().to_owned(),
+                id: m.id,
+                from: m.from_name.clone(),
+                from_id: m.from_id,
+                reply_to: m.reply_to_id(),
+                kind: m.kind.clone(),
+                text: m.text().to_owned(),
+            });
+            if let Err(e) = mcp.call(
+                "tg_messages_mark_read",
+                json!({"peer": peer, "maxId": m.id}),
+            ) {
+                crate::log(&format!("mark read failed peer={peer} msg={}: {e:#}", m.id));
+            }
         }
         let kept: Vec<i64> = agent_ids.into_iter().collect();
         let skip = kept.len().saturating_sub(AGENT_IDS_KEPT);
