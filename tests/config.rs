@@ -76,12 +76,37 @@ fn restricted_tier_cannot_bypass_permissions() {
     );
 }
 
+fn restricted_with_tools(tools: &str) -> String {
+    format!(
+        "{BASE}\n[tier.r]\ncwd = \"/tmp\"\nrestricted = true\ntools = {tools:?}\ninstructions = \"i\"\n"
+    )
+}
+
 #[test]
 fn restricted_tier_cannot_list_a_shell() {
-    let e = problems(&format!(
-        "{BASE}\n[tier.r]\ncwd = \"/tmp\"\nrestricted = true\ntools = \"Read, Bash\"\ninstructions = \"i\"\n"
-    ));
-    assert!(e.contains(r#"code-running tools ["Bash"]"#), "{e}");
+    let e = problems(&restricted_with_tools("Read, Bash"));
+    assert!(e.contains(r#"not ["Bash"]"#), "{e}");
+}
+
+#[test]
+fn restricted_tier_lists_only_read_only_tools() {
+    // claude splits --tools on spaces too, so "Read Bash" would grant Bash;
+    // Monitor runs commands; Write could plant a git hook.
+    for bad in [
+        "Read Bash",
+        "Read,Monitor",
+        "Read,Write",
+        "Bash(ls:*)",
+        "default",
+        "read",
+    ] {
+        let e = problems(&restricted_with_tools(bad));
+        assert!(e.contains("restricted tier may list only"), "{bad:?}: {e}");
+    }
+    Config::parse(&restricted_with_tools(
+        " Read, Grep,Glob ,WebFetch,WebSearch",
+    ))
+    .unwrap();
 }
 
 #[test]

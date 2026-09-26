@@ -42,6 +42,14 @@ fn restricted_tier_never_bypasses_even_if_config_slipped() {
 }
 
 #[test]
+fn restricted_tools_are_passed_as_bare_comma_list() {
+    let mut cfg = cfg();
+    cfg.tiers.get_mut("partner").unwrap().tools = Some(" Read, Grep ,".into());
+    let a = args(&build_command(&cfg, &cfg.tiers["partner"], None));
+    assert!(has_pair(&a, "--tools", "Read,Grep"), "{a:?}");
+}
+
+#[test]
 fn full_tier() {
     let cfg = cfg();
     let a = args(&build_command(&cfg, &cfg.tiers["full"], None));

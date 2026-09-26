@@ -70,6 +70,8 @@ trust = "partner"
 # permission_mode: passed as --permission-mode when set
 # restricted:      --restricted --strict-mcp-config --tools <tools>: no shell,
 #                  no MCP servers, no files outside cwd
+# tools:           restricted tiers only; read-only tools, comma-separated:
+#                  Read, Grep, Glob, WebFetch, WebSearch
 # instructions:    added to the prompt after the preamble
 
 [tier.full]

@@ -18,7 +18,7 @@ Claude sessions are kept per chat and tier (`peer:trust`). A new run resumes the
 ## Threat model
 
 - The allowlist runs before the model. Admission depends on the dialog peer, the sender id, and the trigger (any message, or a mention of the agent or a reply to it). A message from anyone else is never part of a prompt, so it cannot inject instructions. In a group, the context lines given to an admitted run do include other members' recent messages; write tier instructions with that in mind.
-- Tiers map trust to capabilities. A `restricted` tier runs with `--restricted --strict-mcp-config --tools <tools>`. That means no shell or other code-running tools, no MCP servers (so no Telegram access), file tools confined to the tier's `cwd`, user and project settings ignored, and `bypassPermissions` refused. `check` rejects a restricted tier whose `tools` list names `Bash`, `PowerShell` or `REPL`, or that sets `permission_mode = "bypassPermissions"`. An unrestricted tier runs with the full Claude Code configuration it finds through `claude_env` and `cwd`.
+- Tiers map trust to capabilities. A `restricted` tier runs with `--restricted --strict-mcp-config --tools <tools>`. That means no shell or other code-running tools, no MCP servers (so no Telegram access), file tools confined to the tier's `cwd`, user and project settings ignored, and `bypassPermissions` refused. `check` accepts only read-only tools in a restricted tier's comma-separated `tools` list (`Read`, `Grep`, `Glob`, `WebFetch`, `WebSearch`) and rejects `permission_mode = "bypassPermissions"` there. Anything else is refused because it runs code or writes files: a file written into a repository, such as a git hook, can run code later. An unrestricted tier runs with the full Claude Code configuration it finds through `claude_env` and `cwd`.
 - The runner picks the reply chat, not the model. The reply always goes to the chat the message came from. A restricted run has no Telegram tools, so it cannot write anywhere else.
 
 It does not protect against:
@@ -103,7 +103,7 @@ Top level:
 | `cwd` | working directory of the run; `~` expanded |
 | `permission_mode` | passed as `--permission-mode` when set |
 | `restricted` | `true` adds `--restricted --strict-mcp-config --tools <tools>` |
-| `tools` | required when restricted; comma-separated built-in tool names |
+| `tools` | required when restricted; comma-separated, from `Read`, `Grep`, `Glob`, `WebFetch`, `WebSearch` |
 | `instructions` | added to the prompt after the preamble |
 
 The prompt of each run is the preamble, then the tier instructions, then `Chat: <title> (peer <peer>). Recent messages:` followed by one `[id] name (reply to N): text` line per message, then `Answer this message [id] from <name>:` followed by the text. Blank lines separate the parts.

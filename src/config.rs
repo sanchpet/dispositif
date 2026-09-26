@@ -173,17 +173,17 @@ impl Config {
                         "{at}: restricted tier needs a non-empty tools list"
                     ));
                 }
-                let shells: Vec<&str> = t
+                let refused: Vec<&str> = t
                     .tools
                     .as_deref()
                     .unwrap_or("")
                     .split(',')
                     .map(str::trim)
-                    .filter(|tool| CODE_RUNNING_TOOLS.contains(tool))
+                    .filter(|tool| !tool.is_empty() && !RESTRICTED_TOOLS.contains(tool))
                     .collect();
-                if !shells.is_empty() {
+                if !refused.is_empty() {
                     out.push(format!(
-                        "{at}: restricted tier lists code-running tools {shells:?}; that would give it a shell"
+                        "{at}: restricted tier may list only {RESTRICTED_TOOLS:?}, not {refused:?}"
                     ));
                 }
                 if t.permission_mode.as_deref() == Some("bypassPermissions") {
@@ -197,8 +197,10 @@ impl Config {
     }
 }
 
-/// `--restricted` removes these unless `--tools` names them again.
-const CODE_RUNNING_TOOLS: [&str; 3] = ["Bash", "PowerShell", "REPL"];
+/// What a restricted tier may name in `--tools`: tools that neither run code nor
+/// write files. An allowlist, because claude keeps adding code-running tools
+/// (Monitor) and parses `--tools` on spaces as well as commas.
+pub const RESTRICTED_TOOLS: [&str; 5] = ["Read", "Grep", "Glob", "WebFetch", "WebSearch"];
 
 fn valid_peer(peer: &str) -> bool {
     if peer == "*" {

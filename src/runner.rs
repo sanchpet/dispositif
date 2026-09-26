@@ -158,11 +158,20 @@ pub fn build_command(cfg: &Config, tier: &Tier, resume: Option<&str>) -> Command
     let mut cmd = Command::new(expand_tilde(&cfg.claude_bin));
     cmd.args(["-p", "--output-format", "json"]);
     if tier.restricted {
+        // Rejoined with bare commas, so claude reads exactly the names `check` saw.
+        let tools: Vec<&str> = tier
+            .tools
+            .as_deref()
+            .unwrap_or("")
+            .split(',')
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .collect();
         cmd.args([
             "--restricted",
             "--strict-mcp-config",
             "--tools",
-            tier.tools.as_deref().unwrap_or(""),
+            &tools.join(","),
         ]);
     }
     if let Some(mode) = &tier.permission_mode
