@@ -127,8 +127,10 @@ fn malformed_peer() {
 fn malformed_from() {
     let e = problems(&BASE.replace("from = [1000002]", "from = []"));
     assert!(e.contains("from is empty"), "{e}");
-    let e = problems(&BASE.replace("from = [1000002]", "from = [0]"));
-    assert!(e.contains("from contains 0"), "{e}");
+    for bad in ["[0]", "[-1000003]", "[1000002, -5]"] {
+        let e = problems(&BASE.replace("from = [1000002]", &format!("from = {bad}")));
+        assert!(e.contains("from must hold user ids"), "{bad}: {e}");
+    }
     let e = problems(&BASE.replace("from = [1000002]", r#"from = ["1000002"]"#));
     assert!(e.contains("from"), "{e}");
 }
@@ -153,6 +155,41 @@ fn all_problems_reported_at_once() {
     let e = problems(&bad);
     assert!(
         e.contains("names no [tier.nope]") && e.contains("numeric dialog id"),
+        "{e}"
+    );
+}
+
+#[test]
+fn empty_fallback_reply() {
+    let e = problems(&BASE.replace(r#"fallback_reply = "f""#, r#"fallback_reply = " \n""#));
+    assert!(e.contains("fallback_reply is empty"), "{e}");
+}
+
+#[test]
+fn unknown_permission_mode() {
+    let e = problems(&BASE.replace("[tier.full]\n", "[tier.full]\npermission_mode = \"yolo\"\n"));
+    assert!(e.contains(r#"permission_mode "yolo" is not one of"#), "{e}");
+    for good in [
+        "auto",
+        "acceptEdits",
+        "plan",
+        "default",
+        "dontAsk",
+        "manual",
+    ] {
+        Config::parse(&BASE.replace(
+            "[tier.full]\n",
+            &format!("[tier.full]\npermission_mode = {good:?}\n"),
+        ))
+        .unwrap();
+    }
+}
+
+#[test]
+fn tools_without_restricted() {
+    let e = problems(&BASE.replace("[tier.full]\n", "[tier.full]\ntools = \"Read\"\n"));
+    assert!(
+        e.contains("tools applies only with restricted = true"),
         "{e}"
     );
 }

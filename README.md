@@ -52,7 +52,7 @@ dispositif run   --config /path/to/config.toml         # poll and answer, foreve
 
 The config path can also come from `DISPOSITIF_CONFIG`.
 
-`check` exits non-zero and lists every problem if the config cannot be parsed, a rule names a tier that does not exist, a peer or sender id is malformed, or a restricted tier has no tools. A tier `cwd` that does not exist on the machine is reported as a warning only.
+`check` exits non-zero and lists every problem if the config cannot be parsed, a rule names a tier that does not exist, a peer or sender id is malformed, a restricted tier has no tools or a tool that is not read-only, an unrestricted tier sets `tools`, a `permission_mode` is unknown, or `fallback_reply` is empty. A tier `cwd` that does not exist on the machine is reported as a warning only.
 
 `watch` prints one line per admitted message:
 
@@ -84,7 +84,7 @@ Top level:
 | `run_timeout_secs` | `900` | a run is killed after this and answered with `fallback_reply` |
 | `history` | `15` | recent messages given to the run as context |
 | `preamble` | required | first part of every prompt |
-| `fallback_reply` | required | posted when a run fails |
+| `fallback_reply` | required, non-empty | posted when a run fails |
 
 `[[rule]]`, tried in order, first match wins:
 
@@ -92,7 +92,7 @@ Top level:
 |---|---|
 | `name` | unique label, shown in logs and events |
 | `peer` | dialog id as mcp-tg prints it (`1000002` user, `-1000003` group, `-100…` supergroup or channel), or `*` for any chat |
-| `from` | sender ids this rule admits |
+| `from` | sender user ids (positive) this rule admits |
 | `trigger` | `any`: every message. `mention_or_reply`: only a mention of the agent or a reply to one of its messages. In a direct message, `mention_or_reply` counts as satisfied. |
 | `trust` | name of the `[tier.<name>]` that handles the message |
 
@@ -101,9 +101,9 @@ Top level:
 | Key | Meaning |
 |---|---|
 | `cwd` | working directory of the run; `~` expanded |
-| `permission_mode` | passed as `--permission-mode` when set |
+| `permission_mode` | passed as `--permission-mode` when set; one of `acceptEdits`, `auto`, `bypassPermissions`, `default`, `dontAsk`, `manual`, `plan` |
 | `restricted` | `true` adds `--restricted --strict-mcp-config --tools <tools>` |
-| `tools` | required when restricted; comma-separated, from `Read`, `Grep`, `Glob`, `WebFetch`, `WebSearch` |
+| `tools` | required when restricted, refused otherwise; comma-separated, from `Read`, `Grep`, `Glob`, `WebFetch`, `WebSearch` |
 | `instructions` | added to the prompt after the preamble |
 
 The prompt of each run is the preamble, then the tier instructions, then `Chat: <title> (peer <peer>). Recent messages:` followed by one `[id] name (reply to N): text` line per message, then `Answer this message [id] from <name>:` followed by the text. Blank lines separate the parts.

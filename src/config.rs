@@ -127,6 +127,9 @@ impl Config {
         if self.run_timeout_secs == 0 {
             out.push("run_timeout_secs must be positive".into());
         }
+        if self.fallback_reply.trim().is_empty() {
+            out.push("fallback_reply is empty: a failed run would go unanswered".into());
+        }
         if self.rules.is_empty() {
             out.push("no [[rule]]: nothing would ever get through".into());
         }
@@ -147,8 +150,10 @@ impl Config {
             if r.from.is_empty() {
                 out.push(format!("{at}: from is empty, the rule would admit no one"));
             }
-            if r.from.contains(&0) {
-                out.push(format!("{at}: from contains 0, which is no Telegram id"));
+            if r.from.iter().any(|&id| id <= 0) {
+                out.push(format!(
+                    "{at}: from must hold user ids, which are positive; chat ids go in peer"
+                ));
             }
             if r.from.contains(&self.agent_id) {
                 out.push(format!(
@@ -166,6 +171,18 @@ impl Config {
             let at = format!("tier {name:?}");
             if t.cwd.trim().is_empty() {
                 out.push(format!("{at}: cwd is empty"));
+            }
+            if let Some(mode) = &t.permission_mode
+                && !PERMISSION_MODES.contains(&mode.as_str())
+            {
+                out.push(format!(
+                    "{at}: permission_mode {mode:?} is not one of {PERMISSION_MODES:?}"
+                ));
+            }
+            if !t.restricted && t.tools.is_some() {
+                out.push(format!(
+                    "{at}: tools applies only with restricted = true; without it every tool is available"
+                ));
             }
             if t.restricted {
                 if t.tools.as_deref().is_none_or(|s| s.trim().is_empty()) {
@@ -196,6 +213,17 @@ impl Config {
         out
     }
 }
+
+/// Accepted by `claude --permission-mode` (2.1.282); "default" is an alias.
+const PERMISSION_MODES: [&str; 7] = [
+    "acceptEdits",
+    "auto",
+    "bypassPermissions",
+    "default",
+    "dontAsk",
+    "manual",
+    "plan",
+];
 
 /// What a restricted tier may name in `--tools`: tools that neither run code nor
 /// write files. An allowlist, because claude keeps adding code-running tools
