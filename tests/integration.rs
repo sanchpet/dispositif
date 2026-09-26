@@ -362,6 +362,9 @@ mod runner {
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
 
+    use std::time::{Duration, Instant};
+
+    use dispositif::runner::run_claude;
     use dispositif::state::Sessions;
 
     /// Runs spawn children one at a time, as `run` does. On macOS a pipe end
@@ -526,6 +529,59 @@ mod runner {
             sent(&fake.take_log())[0]["text"],
             cfg.fallback_reply.as_str()
         );
+    }
+
+    fn alive(pid: &str) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    /// `sh -c body` with $D set to a scratch dir; returns the result and elapsed time.
+    fn run_sh(body: &str, timeout_secs: u64) -> (anyhow::Result<()>, Duration, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", body]).env("D", tmp.path());
+        let started = Instant::now();
+        let res = run_claude(cmd, String::new(), Duration::from_secs(timeout_secs)).map(|_| ());
+        let elapsed = started.elapsed();
+        let pid = std::fs::read_to_string(tmp.path().join("pid")).unwrap();
+        (res, elapsed, pid.trim().to_owned())
+    }
+
+    fn gone(pid: &str) -> bool {
+        // The orphan is reaped by init shortly after the kill.
+        (0..50).any(|_| {
+            let dead = !alive(pid);
+            if !dead {
+                thread::sleep(Duration::from_millis(20));
+            }
+            dead
+        })
+    }
+
+    #[test]
+    fn timeout_kills_everything_the_run_started() {
+        let _serial = serial();
+        let (res, elapsed, pid) = run_sh(r#"sleep 30 & echo $! > "$D/pid"; wait"#, 1);
+        assert!(format!("{:#}", res.unwrap_err()).contains("timed out"));
+        assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+        assert!(gone(&pid), "background job {pid} survived the timeout");
+    }
+
+    #[test]
+    fn background_job_neither_outlives_nor_delays_the_run() {
+        let _serial = serial();
+        let (res, elapsed, pid) = run_sh(
+            r#"sleep 30 & echo $! > "$D/pid"; echo '{"result":"hi","session_id":"s","is_error":false}'"#,
+            20,
+        );
+        res.unwrap();
+        assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+        assert!(gone(&pid), "background job {pid} outlived the run");
     }
 
     #[test]

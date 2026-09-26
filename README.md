@@ -81,7 +81,7 @@ Top level:
 | `claude_bin` | `claude` | path, or name looked up on `PATH` |
 | `claude_env` | `{}` | extra environment for runs; a leading `~` in values is expanded |
 | `session_ttl_secs` | `86400` | how long a chat's Claude session is resumed |
-| `run_timeout_secs` | `900` | a run is killed after this and answered with `fallback_reply` |
+| `run_timeout_secs` | `900` | a run is killed after this and answered with `fallback_reply`; a run's whole process group is killed when it ends either way |
 | `history` | `15` | recent messages given to the run as context |
 | `preamble` | required | first part of every prompt |
 | `fallback_reply` | required, non-empty | posted when a run fails |

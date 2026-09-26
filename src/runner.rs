@@ -5,7 +5,9 @@
 //! event came from, so no tier can write to any other chat.
 
 use std::io::{Read, Write};
+use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
@@ -262,11 +264,17 @@ fn run_event(
     Ok(out.result.unwrap_or_default().trim().to_owned())
 }
 
-/// Run claude with `prompt` on stdin, killing it after `timeout`.
+/// How long output may take to close once the run's process group is gone.
+const READ_GRACE: Duration = Duration::from_secs(5);
+
+/// Run claude with `prompt` on stdin in its own process group. After `timeout`,
+/// or as soon as claude exits, the whole group is killed: nothing a run
+/// started outlives it or keeps its output open.
 pub fn run_claude(mut cmd: Command, prompt: String, timeout: Duration) -> Result<ClaudeOutput> {
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .process_group(0);
     let mut child = cmd
         .spawn()
         .with_context(|| format!("starting {}", cmd.get_program().to_string_lossy()))?;
@@ -276,18 +284,16 @@ pub fn run_claude(mut cmd: Command, prompt: String, timeout: Duration) -> Result
     thread::spawn(move || stdin.write_all(prompt.as_bytes()));
     let stdout = drain(child.stdout.take().expect("stdout is piped"));
     let stderr = drain(child.stderr.take().expect("stderr is piped"));
-    let Some(status) = child.wait_timeout(timeout)? else {
-        let _ = child.kill();
+    let waited = child.wait_timeout(timeout);
+    kill_group(child.id());
+    let Some(status) = waited? else {
         let _ = child.wait();
-        // Readers are left behind: a grandchild may still hold the pipes open.
         bail!("claude timed out after {}s", timeout.as_secs());
     };
     let stdout = stdout
-        .join()
-        .map_err(|_| anyhow!("stdout reader panicked"))?;
-    let stderr = stderr
-        .join()
-        .map_err(|_| anyhow!("stderr reader panicked"))?;
+        .recv_timeout(READ_GRACE)
+        .map_err(|_| anyhow!("claude exited but its output stayed open"))?;
+    let stderr = stderr.recv_timeout(READ_GRACE).unwrap_or_default();
     if !status.success() {
         let err = String::from_utf8_lossy(&stderr);
         let err = err.trim();
@@ -298,12 +304,22 @@ pub fn run_claude(mut cmd: Command, prompt: String, timeout: Duration) -> Result
     serde_json::from_slice(&stdout).context("claude output is not the expected JSON")
 }
 
-fn drain(mut r: impl Read + Send + 'static) -> thread::JoinHandle<Vec<u8>> {
+fn kill_group(pgid: u32) {
+    // ESRCH (the group is already empty) is the common case and needs no report.
+    if let Ok(pgid) = libc::pid_t::try_from(pgid) {
+        // SAFETY: killpg only sends a signal; pgid is the group spawn created.
+        unsafe { libc::killpg(pgid, libc::SIGKILL) };
+    }
+}
+
+fn drain(mut r: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
+    let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = r.read_to_end(&mut buf);
-        buf
-    })
+        let _ = tx.send(buf);
+    });
+    rx
 }
 
 #[cfg(test)]
