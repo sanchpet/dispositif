@@ -18,7 +18,7 @@ use wait_timeout::ChildExt;
 
 use crate::config::{Config, Tier, expand_tilde};
 use crate::mcp::Mcp;
-use crate::poll::{Event, poll_cycle};
+use crate::poll::{Change, Event, Health, poll_cycle};
 use crate::state::{Session, Sessions, StateDir};
 use crate::tg::{Message, MessageList};
 use crate::{log, truncate_chars};
@@ -32,25 +32,19 @@ pub fn run(cfg: &Config, dir: &StateDir) -> Result<()> {
     let mut state = dir.load_state()?;
     let mut sessions = dir.load_sessions()?;
     let mut mcp = Mcp::new(&cfg.mcp_url);
-    let mut failing = false;
+    let mut health = Health::default();
     log("runner started");
     loop {
         let mut events = Vec::new();
         // Events collected before a mid-poll failure are still answered: `last`
         // has moved past them, so they will not come back.
-        match poll_cycle(&mut mcp, cfg, dir, &mut state, started, &mut |ev| {
+        let res = poll_cycle(&mut mcp, cfg, dir, &mut state, started, &mut |ev| {
             events.push(ev)
-        }) {
-            Ok(()) if failing => {
-                log("poll recovered");
-                failing = false;
-            }
-            Ok(()) => {}
-            Err(e) if !failing => {
-                log(&format!("poll failed: {e:#}"));
-                failing = true;
-            }
-            Err(_) => {}
+        });
+        match health.observe(&res) {
+            Some(Change::Failed(e)) => log(&format!("poll failed: {e}")),
+            Some(Change::Recovered) => log("poll recovered"),
+            None => {}
         }
         for ev in &events {
             log(&format!(

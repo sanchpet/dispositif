@@ -170,12 +170,58 @@ pub fn poll_cycle(
     res
 }
 
+/// Poll health across cycles: a failure is reported once, and so is the recovery.
+#[derive(Debug, Default)]
+pub struct Health {
+    failing: bool,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Change {
+    Failed(String),
+    Recovered,
+}
+
+impl Health {
+    /// What to report after a cycle that ended with `res`, if anything.
+    pub fn observe(&mut self, res: &Result<()>) -> Option<Change> {
+        match (res, self.failing) {
+            (Ok(()), true) => {
+                self.failing = false;
+                Some(Change::Recovered)
+            }
+            (Err(e), false) => {
+                self.failing = true;
+                Some(Change::Failed(format!("{e:#}")))
+            }
+            _ => None,
+        }
+    }
+}
+
 /// `watch`'s error and recovery lines, keyed like the events: `event` first.
 #[derive(Serialize)]
 struct Status<'a> {
     event: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<&'a str>,
+}
+
+impl Change {
+    /// The JSON line `watch` prints for this change.
+    pub fn to_json(&self) -> String {
+        let status = match self {
+            Change::Failed(e) => Status {
+                event: "error",
+                error: Some(crate::truncate_chars(e, 300)),
+            },
+            Change::Recovered => Status {
+                event: "recovered",
+                error: None,
+            },
+        };
+        serde_json::to_string(&status).expect("a struct of strings always encodes")
+    }
 }
 
 fn emit(v: &impl Serialize) {
@@ -191,34 +237,52 @@ pub fn watch(cfg: &Config, dir: &StateDir, once: bool) -> Result<()> {
     let started = crate::now();
     let mut state = dir.load_state()?;
     let mut mcp = Mcp::new(&cfg.mcp_url);
-    let mut failing = false;
+    let mut health = Health::default();
     loop {
-        match poll_cycle(&mut mcp, cfg, dir, &mut state, started, &mut |ev| emit(&ev)) {
-            Ok(()) if failing => {
-                emit(&Status {
-                    event: "recovered",
-                    error: None,
-                });
-                failing = false;
-            }
-            Ok(()) => {}
-            Err(e) => {
-                if !failing {
-                    let msg = format!("{e:#}");
-                    emit(&Status {
-                        event: "error",
-                        error: Some(crate::truncate_chars(&msg, 300)),
-                    });
-                    failing = true;
-                }
-                if once {
-                    return Err(e);
-                }
-            }
+        let res = poll_cycle(&mut mcp, cfg, dir, &mut state, started, &mut |ev| emit(&ev));
+        if let Some(change) = health.observe(&res) {
+            println!("{}", change.to_json());
         }
         if once {
-            return Ok(());
+            return res;
         }
         std::thread::sleep(Duration::from_secs(cfg.interval_secs));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::anyhow;
+
+    #[test]
+    fn failure_and_recovery_reported_once_each() {
+        let mut h = Health::default();
+        let fail = || Err(anyhow!("initialize").context("poll"));
+        let seen: Vec<Option<Change>> = [fail(), fail(), Ok(()), Ok(()), fail()]
+            .iter()
+            .map(|r| h.observe(r))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                Some(Change::Failed("poll: initialize".into())),
+                None,
+                Some(Change::Recovered),
+                None,
+                Some(Change::Failed("poll: initialize".into())),
+            ]
+        );
+    }
+
+    #[test]
+    fn status_lines() {
+        assert_eq!(
+            Change::Failed("boom".into()).to_json(),
+            r#"{"event":"error","error":"boom"}"#
+        );
+        assert_eq!(Change::Recovered.to_json(), r#"{"event":"recovered"}"#);
+        let long = Change::Failed("ж".repeat(400)).to_json();
+        assert_eq!(long.chars().filter(|&c| c == 'ж').count(), 300);
     }
 }
