@@ -49,21 +49,24 @@ from = [1000002]
 trigger = "any"
 trust = "full"
 
-# The owner, anywhere else, when addressing the agent.
-[[rule]]
-name = "owner-mention"
-peer = "*"
-from = [1000002]
-trigger = "mention_or_reply"
-trust = "full"
-
 # A partner and the owner in one shared group, when addressing the agent.
+# Listed before the owner's "*" rule on purpose: a run sees the group's recent
+# messages, so in a chat the partner writes to even the owner gets the partner
+# tier, and text the partner planted there never reaches a full-tier run.
 [[rule]]
 name = "partner"
 peer = "-1000003"
 from = [1000002, 1000004]
 trigger = "mention_or_reply"
 trust = "partner"
+
+# The owner, in any other chat, when addressing the agent.
+[[rule]]
+name = "owner-mention"
+peer = "*"
+from = [1000002]
+trigger = "mention_or_reply"
+trust = "full"
 
 # Tiers map trust to capabilities.
 # cwd:             working directory of the run
