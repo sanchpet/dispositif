@@ -112,6 +112,12 @@ impl Config {
     /// Every reason the config cannot be trusted, so `check` reports them all at once.
     pub fn problems(&self) -> Vec<String> {
         let mut out = Vec::new();
+        if !self.mcp_url.starts_with("http://") {
+            out.push(format!(
+                "mcp_url {:?} must be http://: mcp-tg serves plain HTTP locally and this build has no TLS",
+                self.mcp_url
+            ));
+        }
         if self.agent_id == 0 {
             out.push("agent_id must be a non-zero Telegram user id".into());
         }

@@ -193,3 +193,9 @@ fn tools_without_restricted() {
         "{e}"
     );
 }
+
+#[test]
+fn mcp_url_must_be_plain_http() {
+    let e = problems(&format!("mcp_url = \"https://example.com/mcp\"\n{BASE}"));
+    assert!(e.contains("must be http://"), "{e}");
+}

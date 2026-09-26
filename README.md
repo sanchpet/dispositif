@@ -74,7 +74,7 @@ Top level:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `mcp_url` | `http://127.0.0.1:8788` | mcp-tg streamable HTTP endpoint |
+| `mcp_url` | `http://127.0.0.1:8788` | mcp-tg streamable HTTP endpoint; plain `http://` only |
 | `interval_secs` | `10` | pause between poll cycles |
 | `agent_id` | required | the agent account's Telegram user id; its own messages never match |
 | `agent_username` | required | without `@`; `@<username>` anywhere in a message (case-insensitive, not followed by a letter, digit or `_`) is a mention |
