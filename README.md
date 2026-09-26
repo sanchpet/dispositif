@@ -77,7 +77,7 @@ Top level:
 | `mcp_url` | `http://127.0.0.1:8788` | mcp-tg streamable HTTP endpoint |
 | `interval_secs` | `10` | pause between poll cycles |
 | `agent_id` | required | the agent account's Telegram user id; its own messages never match |
-| `agent_username` | required | without `@`; `@<username>` anywhere in a message (case-insensitive) is a mention |
+| `agent_username` | required | without `@`; `@<username>` anywhere in a message (case-insensitive, not followed by a letter, digit or `_`) is a mention |
 | `claude_bin` | `claude` | path, or name looked up on `PATH` |
 | `claude_env` | `{}` | extra environment for runs; a leading `~` in values is expanded |
 | `session_ttl_secs` | `86400` | how long a chat's Claude session is resumed |

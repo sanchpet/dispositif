@@ -9,7 +9,15 @@ use crate::tg::Message;
 /// The message mentions the agent by username, or replies to one of its messages.
 pub fn is_addressed(msg: &Message, cfg: &Config, agent_msg_ids: &BTreeSet<i64>) -> bool {
     let mention = format!("@{}", cfg.agent_username.to_lowercase());
-    if msg.text().to_lowercase().contains(&mention) {
+    let text = msg.text().to_lowercase();
+    // "@agent_bot" names another account: the mention must end the username.
+    let mentioned = text.match_indices(&mention).any(|(at, _)| {
+        !text[at + mention.len()..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+    });
+    if mentioned {
         return true;
     }
     msg.reply_to_id()

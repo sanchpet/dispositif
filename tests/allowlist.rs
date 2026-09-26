@@ -80,3 +80,29 @@ fn message_without_sender_matches_nothing() {
     };
     assert!(match_rule(&cfg, OWNER_DM, &msg, &BTreeSet::new(), true).is_none());
 }
+
+#[test]
+fn mention_must_end_the_username() {
+    let cfg = cfg();
+    let none = BTreeSet::new();
+    for text in [
+        "@example_agent_bot /start",
+        "@example_agentX hi",
+        "@example_agent2",
+    ] {
+        let got = match_rule(&cfg, FRIENDS_CHAT, &m(OWNER, text, None), &none, false);
+        assert!(
+            got.is_none(),
+            "{text:?} admitted by {:?}",
+            got.map(|r| &r.name)
+        );
+    }
+    for text in [
+        "@example_agent",
+        "hi @Example_Agent, look",
+        "@bob @example_agent.",
+    ] {
+        let got = match_rule(&cfg, FRIENDS_CHAT, &m(OWNER, text, None), &none, false);
+        assert!(got.is_some(), "{text:?} not admitted");
+    }
+}
