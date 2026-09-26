@@ -6,6 +6,7 @@
 
 pub mod allowlist;
 pub mod config;
+pub mod mcp;
 pub mod tg;
 
 use std::time::{SystemTime, UNIX_EPOCH};
