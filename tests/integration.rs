@@ -447,6 +447,33 @@ mod runner {
     }
 
     #[test]
+    fn typing_stays_alive_while_the_run_works() {
+        let _serial = serial();
+        let (fake, tmp, mut cfg) = setup(
+            r#"sleep 2.5; echo '{"type":"result","result":"done","session_id":"s","is_error":false}'"#,
+        );
+        cfg.typing_interval_secs = 1;
+        cfg.run_timeout_secs = 10;
+        let dir = StateDir::new(tmp.path().join("state"));
+        handle(&cfg, &dir, &mut Sessions::new(), &event()).unwrap();
+
+        let log = fake.take_log();
+        let typing = Fake::calls(&log, "tg_typing_send").len();
+        assert!(typing >= 3, "typing sent {typing} times over a 2.5s run");
+        let last_typing = log
+            .iter()
+            .rposition(|r| matches!(r, Req::Call { tool, .. } if tool == "tg_typing_send"));
+        let send = log
+            .iter()
+            .position(|r| matches!(r, Req::Call { tool, .. } if tool == "tg_messages_send"));
+        assert!(
+            last_typing < send,
+            "typing continued after the reply was posted"
+        );
+        fake.assert_sessions_closed(&log);
+    }
+
+    #[test]
     fn answers_and_resumes() {
         let _serial = serial();
         let (fake, tmp, cfg) = setup(

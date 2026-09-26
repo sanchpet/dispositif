@@ -26,6 +26,8 @@ pub struct Config {
     pub run_timeout_secs: u64,
     #[serde(default = "default_history")]
     pub history: u32,
+    #[serde(default = "default_typing_interval")]
+    pub typing_interval_secs: u64,
     pub preamble: String,
     pub fallback_reply: String,
     #[serde(rename = "rule", default)]
@@ -92,6 +94,10 @@ fn default_run_timeout() -> u64 {
 fn default_history() -> u32 {
     15
 }
+/// Telegram drops a typing indicator after about five seconds.
+fn default_typing_interval() -> u64 {
+    4
+}
 
 impl Config {
     /// Everyone who can admit a message through some rule, plus the agent itself.
@@ -138,6 +144,9 @@ impl Config {
         }
         if self.interval_secs == 0 {
             out.push("interval_secs must be positive".into());
+        }
+        if self.typing_interval_secs == 0 {
+            out.push("typing_interval_secs must be positive".into());
         }
         if self.run_timeout_secs == 0 {
             out.push("run_timeout_secs must be positive".into());
