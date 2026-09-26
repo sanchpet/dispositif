@@ -364,6 +364,15 @@ mod runner {
 
     use dispositif::state::Sessions;
 
+    /// Runs spawn children one at a time, as `run` does. On macOS a pipe end
+    /// can leak into a child forked concurrently from another test before
+    /// close-on-exec is set; a leaked stdin write end keeps the fake claude's
+    /// `cat` from ever seeing EOF, and that run times out.
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        static SPAWN: Mutex<()> = Mutex::new(());
+        SPAWN.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// A stand-in claude: records argv, cwd and stdin, then runs `body`.
     fn fake_claude(dir: &Path, body: &str) -> String {
         let path = dir.join("claude");
@@ -409,6 +418,7 @@ mod runner {
 
     #[test]
     fn answers_and_resumes() {
+        let _serial = serial();
         let (fake, tmp, cfg) = setup(
             r#"echo '{"type":"result","result":"  it is noon  ","session_id":"sess-1","total_cost_usd":0.01,"num_turns":2,"is_error":false}'"#,
         );
@@ -459,6 +469,7 @@ mod runner {
 
     #[test]
     fn failed_run_posts_fallback() {
+        let _serial = serial();
         let (fake, tmp, cfg) = setup("echo boom >&2; exit 3");
         let mut sessions = Sessions::new();
         handle(
@@ -476,6 +487,7 @@ mod runner {
 
     #[test]
     fn error_result_posts_fallback() {
+        let _serial = serial();
         let (fake, tmp, cfg) =
             setup(r#"echo '{"result":"rate limited","session_id":"x","is_error":true}'"#);
         let mut sessions = Sessions::new();
@@ -495,6 +507,7 @@ mod runner {
 
     #[test]
     fn timeout_posts_fallback() {
+        let _serial = serial();
         let (fake, tmp, cfg) = setup("sleep 30");
         let started = std::time::Instant::now();
         let mut sessions = Sessions::new();
@@ -517,6 +530,7 @@ mod runner {
 
     #[test]
     fn empty_result_posts_nothing() {
+        let _serial = serial();
         let (fake, tmp, cfg) =
             setup(r#"echo '{"result":"   ","session_id":"sess-9","is_error":false}'"#);
         let mut sessions = Sessions::new();
@@ -533,6 +547,7 @@ mod runner {
 
     #[test]
     fn long_reply_is_cut_to_4000_chars() {
+        let _serial = serial();
         let (fake, tmp, cfg) = setup(
             r#"printf '{"result":"%s","session_id":"s","is_error":false}' "$(printf 'ж%.0s' $(seq 1 4100))""#,
         );
