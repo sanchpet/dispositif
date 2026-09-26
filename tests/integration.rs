@@ -10,6 +10,7 @@ use tiny_http::{Header, Method, Response, Server};
 use dispositif::config::Config;
 use dispositif::mcp::Mcp;
 use dispositif::poll::{Event, poll_cycle};
+use dispositif::runner::handle;
 use dispositif::state::{State, StateDir};
 
 const STARTED: f64 = 1_000.0;
@@ -321,4 +322,200 @@ fn poll_failure_still_closes_session() {
     );
     assert!(res.is_err());
     fake.assert_sessions_closed(&fake.take_log());
+}
+
+#[cfg(unix)]
+mod runner {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+
+    use dispositif::state::Sessions;
+
+    /// A stand-in claude: records argv, cwd and stdin, then runs `body`.
+    fn fake_claude(dir: &Path, body: &str) -> String {
+        let path = dir.join("claude");
+        let script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{d}/argv\"\npwd > \"{d}/cwd\"\ncat > \"{d}/stdin\"\nprintf '%s' \"$CLAUDE_CONFIG_DIR\" > \"{d}/env\"\n{body}\n",
+            d = dir.display()
+        );
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    fn event() -> Event {
+        Event {
+            event: "message",
+            trust: "full".into(),
+            rule: "owner-dm".into(),
+            peer: "1000002".into(),
+            chat: "Owner".into(),
+            id: 3,
+            from: Some("user1000002".into()),
+            from_id: Some(1000002),
+            reply_to: None,
+            kind: Some("text".into()),
+            text: "what time is it?".into(),
+        }
+    }
+
+    fn setup(body: &str) -> (Fake, tempfile::TempDir, Config) {
+        let fake = Fake::start();
+        fake.add_message("1000002", msg(1, 1000002, "earlier", 900.0));
+        fake.add_message("1000002", msg(3, 1000002, "what time is it?", 1_100.0));
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().canonicalize().unwrap();
+        let bin = fake_claude(&cwd, body);
+        let cfg = config(&fake.url, &bin, &cwd.to_string_lossy());
+        (fake, tmp, cfg)
+    }
+
+    fn sent(log: &[Req]) -> Vec<Value> {
+        Fake::calls(log, "tg_messages_send")
+    }
+
+    #[test]
+    fn answers_and_resumes() {
+        let (fake, tmp, cfg) = setup(
+            r#"echo '{"type":"result","result":"  it is noon  ","session_id":"sess-1","total_cost_usd":0.01,"num_turns":2,"is_error":false}'"#,
+        );
+        let dir = StateDir::new(tmp.path().join("state"));
+        let mut sessions = Sessions::new();
+        handle(&cfg, &dir, &mut sessions, &event()).unwrap();
+
+        let log = fake.take_log();
+        assert_eq!(
+            Fake::calls(&log, "tg_typing_send"),
+            [json!({"peer": "1000002"})]
+        );
+        assert_eq!(Fake::calls(&log, "tg_messages_list")[0]["limit"], 15);
+        assert_eq!(
+            sent(&log),
+            [json!({"peer": "1000002", "text": "it is noon", "parseMode": "plain", "replyTo": 3})]
+        );
+        fake.assert_sessions_closed(&log);
+
+        let d = tmp.path().canonicalize().unwrap();
+        let argv = std::fs::read_to_string(d.join("argv")).unwrap();
+        assert_eq!(argv, "-p\n--output-format\njson\n--permission-mode\nauto\n");
+        assert_eq!(
+            std::fs::read_to_string(d.join("cwd")).unwrap().trim(),
+            d.to_str().unwrap()
+        );
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(d.join("env")).unwrap(),
+            format!("{home}/.claude")
+        );
+        let stdin = std::fs::read_to_string(d.join("stdin")).unwrap();
+        assert!(
+            stdin.starts_with("You are an assistant answering in Telegram"),
+            "{stdin}"
+        );
+        assert!(stdin.contains("The message is from the owner."));
+        assert!(stdin.contains("Chat: Owner (peer 1000002). Recent messages:\n[1] user1000002: earlier\n[3] user1000002: what time is it?"));
+        assert!(stdin.ends_with("Answer this message [3] from user1000002:\nwhat time is it?"));
+
+        assert_eq!(sessions["1000002:full"].id, "sess-1");
+        assert_eq!(dir.load_sessions().unwrap()["1000002:full"].id, "sess-1");
+
+        handle(&cfg, &dir, &mut sessions, &event()).unwrap();
+        let argv = std::fs::read_to_string(d.join("argv")).unwrap();
+        assert!(argv.ends_with("--resume\nsess-1\n"), "{argv}");
+    }
+
+    #[test]
+    fn failed_run_posts_fallback() {
+        let (fake, tmp, cfg) = setup("echo boom >&2; exit 3");
+        let mut sessions = Sessions::new();
+        handle(
+            &cfg,
+            &StateDir::new(tmp.path().join("state")),
+            &mut sessions,
+            &event(),
+        )
+        .unwrap();
+        let log = fake.take_log();
+        assert_eq!(sent(&log)[0]["text"], cfg.fallback_reply.as_str());
+        assert!(sessions.is_empty());
+        fake.assert_sessions_closed(&log);
+    }
+
+    #[test]
+    fn error_result_posts_fallback() {
+        let (fake, tmp, cfg) =
+            setup(r#"echo '{"result":"rate limited","session_id":"x","is_error":true}'"#);
+        let mut sessions = Sessions::new();
+        handle(
+            &cfg,
+            &StateDir::new(tmp.path().join("state")),
+            &mut sessions,
+            &event(),
+        )
+        .unwrap();
+        assert_eq!(
+            sent(&fake.take_log())[0]["text"],
+            cfg.fallback_reply.as_str()
+        );
+        assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn timeout_posts_fallback() {
+        let (fake, tmp, cfg) = setup("sleep 30");
+        let started = std::time::Instant::now();
+        let mut sessions = Sessions::new();
+        handle(
+            &cfg,
+            &StateDir::new(tmp.path().join("state")),
+            &mut sessions,
+            &event(),
+        )
+        .unwrap();
+        assert!(
+            started.elapsed().as_secs() < 10,
+            "the run was not killed on timeout"
+        );
+        assert_eq!(
+            sent(&fake.take_log())[0]["text"],
+            cfg.fallback_reply.as_str()
+        );
+    }
+
+    #[test]
+    fn empty_result_posts_nothing() {
+        let (fake, tmp, cfg) =
+            setup(r#"echo '{"result":"   ","session_id":"sess-9","is_error":false}'"#);
+        let mut sessions = Sessions::new();
+        handle(
+            &cfg,
+            &StateDir::new(tmp.path().join("state")),
+            &mut sessions,
+            &event(),
+        )
+        .unwrap();
+        assert!(sent(&fake.take_log()).is_empty());
+        assert_eq!(sessions["1000002:full"].id, "sess-9");
+    }
+
+    #[test]
+    fn long_reply_is_cut_to_4000_chars() {
+        let (fake, tmp, cfg) = setup(
+            r#"printf '{"result":"%s","session_id":"s","is_error":false}' "$(printf 'ж%.0s' $(seq 1 4100))""#,
+        );
+        let mut sessions = Sessions::new();
+        handle(
+            &cfg,
+            &StateDir::new(tmp.path().join("state")),
+            &mut sessions,
+            &event(),
+        )
+        .unwrap();
+        let text = sent(&fake.take_log())[0]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(text.chars().count(), 4000);
+    }
 }

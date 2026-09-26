@@ -8,6 +8,7 @@ pub mod allowlist;
 pub mod config;
 pub mod mcp;
 pub mod poll;
+pub mod runner;
 pub mod state;
 pub mod tg;
 
