@@ -1,0 +1,92 @@
+# dispositif example config. Every id, name and path below is a placeholder:
+# replace them with your own. Check the result with
+#   dispositif check --config /path/to/config.toml
+
+# mcp-tg daemon logged in as the agent's Telegram account (streamable HTTP).
+mcp_url = "http://127.0.0.1:8788"
+interval_secs = 10
+
+# The agent's own Telegram account: its messages never trigger a run, and
+# "@example_agent" in a message counts as a mention.
+agent_id = 1000001
+agent_username = "example_agent"
+
+# claude binary: a path, or a name looked up on PATH.
+claude_bin = "claude"
+# Extra environment for every run; a leading ~ is expanded.
+claude_env = { CLAUDE_CONFIG_DIR = "~/.claude" }
+
+# A chat's claude session is resumed until it is this old, then a fresh one starts.
+session_ttl_secs = 86400
+# A run that takes longer is killed and answered with fallback_reply.
+run_timeout_secs = 900
+# Recent messages of the chat given to the run as context.
+history = 15
+
+# Prepended to every run's prompt. The run's final message is posted verbatim.
+preamble = """
+You are an assistant answering in Telegram from your own account. No one is
+watching this run live. Your final message is posted verbatim as your reply in
+the chat below, so it must be the reply itself: plain text, short like a chat
+message, in the language the person wrote in, no report about what you did.
+"""
+
+# Posted when a run fails or times out.
+fallback_reply = "Could not process this message; the owner will see it in the logs."
+
+# Rules are tried in order; the first that admits a message decides its tier.
+# peer:    dialog id as mcp-tg prints it (user id, -chat id, -100... channel id), or "*"
+# from:    sender ids this rule admits
+# trigger: "any" = every message; "mention_or_reply" = only a mention of the agent
+#          or a reply to one of its messages (always satisfied in a direct message)
+# trust:   name of the [tier.*] that runs the message
+
+# The owner, in a direct message with the agent.
+[[rule]]
+name = "owner-dm"
+peer = "1000002"
+from = [1000002]
+trigger = "any"
+trust = "full"
+
+# The owner, anywhere else, when addressing the agent.
+[[rule]]
+name = "owner-mention"
+peer = "*"
+from = [1000002]
+trigger = "mention_or_reply"
+trust = "full"
+
+# A partner and the owner in one shared group, when addressing the agent.
+[[rule]]
+name = "partner"
+peer = "-1000003"
+from = [1000002, 1000004]
+trigger = "mention_or_reply"
+trust = "partner"
+
+# Tiers map trust to capabilities.
+# cwd:             working directory of the run
+# permission_mode: passed as --permission-mode when set
+# restricted:      --restricted --strict-mcp-config --tools <tools>: no shell,
+#                  no MCP servers, no files outside cwd
+# instructions:    added to the prompt after the preamble
+
+[tier.full]
+cwd = "~/notes"
+permission_mode = "auto"
+restricted = false
+instructions = """
+The message is from the owner. Treat it as an instruction typed into a session.
+"""
+
+[tier.partner]
+cwd = "/path/to/repo"
+restricted = true
+tools = "Read,Grep,Glob,WebFetch,WebSearch"
+instructions = """
+The message is from a project partner. You may read the repository in the
+working directory and public web pages. Change nothing, promise nothing, commit
+to no dates: anything that changes code, deploys or spends money goes to the
+owner; say so. Say nothing about the owner personally.
+"""

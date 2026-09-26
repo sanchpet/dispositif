@@ -1,0 +1,24 @@
+[package]
+name = "dispositif"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+description = "Answer allowlisted Telegram messages with headless Claude Code runs, through an mcp-tg daemon"
+repository = "https://github.com/sanchpet/dispositif"
+readme = "README.md"
+keywords = ["telegram", "claude", "mcp", "agent"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+ureq = "3"
+wait-timeout = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+tiny_http = "0.12"
