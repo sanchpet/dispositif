@@ -27,6 +27,12 @@ fn restricted_tier() {
     assert!(a.contains(&"--restricted".into()));
     assert!(a.contains(&"--strict-mcp-config".into()));
     assert!(has_pair(&a, "--tools", "Read,Grep,Glob,WebFetch,WebSearch"));
+    // Without the grant a headless run refuses the very tools it was given.
+    assert!(has_pair(
+        &a,
+        "--allowedTools",
+        "Read,Grep,Glob,WebFetch,WebSearch"
+    ));
     assert!(!a.contains(&"--permission-mode".into()));
     assert!(!a.contains(&"bypassPermissions".into()));
     assert!(!a.contains(&"--resume".into()));

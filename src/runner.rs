@@ -99,19 +99,83 @@ pub fn handle(cfg: &Config, dir: &StateDir, sessions: &mut Sessions, ev: &Event)
     if reply.is_empty() {
         return Ok(());
     }
+    let sent = post_reply(cfg, ev, &reply);
+    if let Err(e) = &sent {
+        let fallback = cfg.fallback_reply.trim();
+        if fallback.is_empty() || reply == fallback {
+            return sent;
+        }
+        // The person must not be left in silence because the reply itself was refused.
+        log(&format!(
+            "send failed peer={} msg={}: {e:#}; sending fallback",
+            ev.peer, ev.id
+        ));
+        post_reply(cfg, ev, fallback)?;
+    }
+    Ok(())
+}
+
+/// Post `text` as a plain-text reply. allowRawMarkdown keeps mcp-tg from refusing
+/// a reply that merely contains markdown-looking characters.
+fn post_reply(cfg: &Config, ev: &Event, text: &str) -> Result<()> {
     with_session(&cfg.mcp_url, |mcp| {
         mcp.call(
             "tg_messages_send",
             json!({
                 "peer": ev.peer,
-                "text": truncate_chars(&reply, REPLY_MAX_CHARS),
+                "text": truncate_chars(text, REPLY_MAX_CHARS),
                 "parseMode": "plain",
+                "allowRawMarkdown": true,
                 "replyTo": ev.id,
             }),
         )
-    })?;
-    Ok(())
+        .map(drop)
+    })
 }
+
+/// Fast-forward the checkout in `dir`. A failure is logged and the run goes on with
+/// what is there: stale code is a worse answer, not a reason to give none.
+fn git_pull(dir: &std::path::Path) {
+    let child = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["pull", "--ff-only", "--quiet"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn();
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => {
+            return log(&format!(
+                "git pull in {} failed to start: {e}",
+                dir.display()
+            ));
+        }
+    };
+    match child.wait_timeout(Duration::from_secs(GIT_PULL_TIMEOUT_SECS)) {
+        Ok(Some(status)) if status.success() => {}
+        Ok(Some(status)) => {
+            let mut err = String::new();
+            if let Some(mut e) = child.stderr.take() {
+                let _ = e.read_to_string(&mut err);
+            }
+            log(&format!(
+                "git pull in {} failed ({status}): {}",
+                dir.display(),
+                err.trim()
+            ));
+        }
+        Ok(None) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            log(&format!("git pull in {} timed out", dir.display()));
+        }
+        Err(e) => log(&format!("git pull in {}: {e}", dir.display())),
+    }
+}
+
+const GIT_PULL_TIMEOUT_SECS: u64 = 60;
 
 /// Keeps the "typing…" indicator alive while a run works: Telegram shows it for
 /// about five seconds, so it is re-sent every `typing_interval_secs` until stopped.
@@ -226,11 +290,16 @@ pub fn build_command(cfg: &Config, tier: &Tier, resume: Option<&str>) -> Command
             .map(str::trim)
             .filter(|t| !t.is_empty())
             .collect();
+        let tools = tools.join(",");
+        // --tools makes a tool available; only --allowedTools grants it. A headless
+        // run has no one to ask, so an available but ungranted tool is refused.
         cmd.args([
             "--restricted",
             "--strict-mcp-config",
             "--tools",
-            &tools.join(","),
+            &tools,
+            "--allowedTools",
+            &tools,
         ]);
     }
     if let Some(mode) = &tier.permission_mode
@@ -289,6 +358,9 @@ fn run_event(
     let key = format!("{}:{}", ev.peer, ev.trust);
     let resume =
         fresh_session(sessions, &key, cfg.session_ttl_secs, crate::now()).map(str::to_owned);
+    if tier.git_pull {
+        git_pull(&expand_tilde(&tier.cwd));
+    }
     let prompt = build_prompt(cfg, tier, ev, ctx);
     let cmd = build_command(cfg, tier, resume.as_deref());
     let res = run_claude(cmd, prompt, Duration::from_secs(cfg.run_timeout_secs)).and_then(|out| {

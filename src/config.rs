@@ -73,6 +73,10 @@ pub struct Tier {
     pub restricted: bool,
     #[serde(default)]
     pub tools: Option<String>,
+    /// Fast-forward the git checkout in `cwd` before each run, so a tier without a
+    /// shell still reads the current code. The runner pulls, not the model.
+    #[serde(default)]
+    pub git_pull: bool,
     pub instructions: String,
 }
 
