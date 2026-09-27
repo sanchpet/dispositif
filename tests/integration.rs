@@ -37,6 +37,8 @@ struct World {
     sessions_opened: usize,
     /// This many tg_messages_mark_read calls fail before they succeed again.
     fail_mark_read: usize,
+    /// This many tg_messages_send calls are refused before they succeed again.
+    fail_send: usize,
 }
 
 struct Fake {
@@ -141,6 +143,13 @@ fn serve(
             assert!(w.live.contains(&sid), "call on dead session {sid}");
             let tool = rpc["params"]["name"].as_str().unwrap().to_owned();
             let args = rpc["params"]["arguments"].clone();
+            if tool == "tg_messages_send" && w.fail_send > 0 {
+                w.fail_send -= 1;
+                w.log.push(Req::Call { sid, tool, args });
+                let body = json!({"jsonrpc": "2.0", "id": rpc["id"], "result": {
+                    "isError": true, "content": [{"type": "text", "text": "text looks like markdown"}]}});
+                return Response::from_string(body.to_string());
+            }
             if tool == "tg_messages_mark_read" && w.fail_mark_read > 0 {
                 w.fail_mark_read -= 1;
                 w.log.push(Req::Call { sid, tool, args });
@@ -388,6 +397,7 @@ mod runner {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
+    use std::process::Command;
 
     use std::time::{Duration, Instant};
 
@@ -447,6 +457,96 @@ mod runner {
     }
 
     #[test]
+    fn a_refused_reply_still_gets_the_fallback() {
+        let _serial = serial();
+        let (fake, tmp, cfg) = setup(
+            r#"echo '{"type":"result","result":"**bold** reply","session_id":"s","is_error":false}'"#,
+        );
+        fake.world.lock().unwrap().fail_send = 1;
+        let dir = StateDir::new(tmp.path().join("state"));
+        handle(&cfg, &dir, &mut Sessions::new(), &event()).unwrap();
+
+        let texts: Vec<Value> = sent(&fake.take_log())
+            .iter()
+            .map(|m| m["text"].clone())
+            .collect();
+        assert_eq!(
+            texts,
+            [json!("**bold** reply"), json!(cfg.fallback_reply.trim())]
+        );
+    }
+
+    #[test]
+    fn git_pull_tier_reads_the_current_code() {
+        let _serial = serial();
+        let (_fake, tmp, mut cfg) = setup(
+            r#"git log -1 --format=%s > ../head; echo '{"type":"result","result":"ok","session_id":"s","is_error":false}'"#,
+        );
+        let root = tmp.path().canonicalize().unwrap();
+        let git = |dir: &Path, args: &[&str]| {
+            let ok = Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@example.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@example.com")
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        let (origin, work, clone) = (
+            root.join("origin.git"),
+            root.join("work"),
+            root.join("clone"),
+        );
+        git(
+            &root,
+            &[
+                "init",
+                "-q",
+                "--bare",
+                "-b",
+                "main",
+                origin.to_str().unwrap(),
+            ],
+        );
+        git(
+            &root,
+            &[
+                "clone",
+                "-q",
+                origin.to_str().unwrap(),
+                work.to_str().unwrap(),
+            ],
+        );
+        git(&work, &["commit", "-q", "--allow-empty", "-m", "old"]);
+        git(&work, &["push", "-q", "origin", "HEAD:main"]);
+        git(
+            &root,
+            &[
+                "clone",
+                "-q",
+                origin.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
+        );
+        git(&work, &["commit", "-q", "--allow-empty", "-m", "new"]);
+        git(&work, &["push", "-q", "origin", "HEAD:main"]);
+
+        let tier = cfg.tiers.get_mut("full").unwrap();
+        tier.cwd = clone.to_string_lossy().into_owned();
+        tier.git_pull = true;
+        let dir = StateDir::new(root.join("state"));
+        handle(&cfg, &dir, &mut Sessions::new(), &event()).unwrap();
+
+        let head = std::fs::read_to_string(root.join("head")).unwrap();
+        assert_eq!(head.trim(), "new", "the run saw a stale checkout");
+    }
+
+    #[test]
     fn typing_stays_alive_while_the_run_works() {
         let _serial = serial();
         let (fake, tmp, mut cfg) = setup(
@@ -491,7 +591,9 @@ mod runner {
         assert_eq!(Fake::calls(&log, "tg_messages_list")[0]["limit"], 15);
         assert_eq!(
             sent(&log),
-            [json!({"peer": "1000002", "text": "it is noon", "parseMode": "plain", "replyTo": 3})]
+            [
+                json!({"peer": "1000002", "text": "it is noon", "parseMode": "plain", "allowRawMarkdown": true, "replyTo": 3})
+            ]
         );
         fake.assert_sessions_closed(&log);
 

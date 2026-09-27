@@ -103,8 +103,9 @@ Top level:
 |---|---|
 | `cwd` | working directory of the run; `~` expanded |
 | `permission_mode` | passed as `--permission-mode` when set; one of `acceptEdits`, `auto`, `bypassPermissions`, `default`, `dontAsk`, `manual`, `plan` |
-| `restricted` | `true` adds `--restricted --strict-mcp-config --tools <tools>` |
+| `restricted` | `true` adds `--restricted --strict-mcp-config --tools <tools> --allowedTools <tools>`: `--tools` makes a tool available, `--allowedTools` grants it, and a headless run has no one to ask |
 | `tools` | required when restricted, refused otherwise; comma-separated, from `Read`, `Grep`, `Glob`, `WebFetch`, `WebSearch` |
+| `git_pull` | `true` runs `git pull --ff-only` in `cwd` before each run, so a tier without a shell reads current code; a failure is logged and the run goes on |
 | `instructions` | added to the prompt after the preamble |
 
 The prompt of each run is the preamble, then the tier instructions, then `Chat: <title> (peer <peer>). Recent messages:` followed by one `[id] name (reply to N): text` line per message, then `Answer this message [id] from <name>:` followed by the text. Blank lines separate the parts.
