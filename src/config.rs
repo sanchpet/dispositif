@@ -43,8 +43,32 @@ pub struct Rule {
     /// Dialog peer as mcp-tg prints it (bot-API style numeric id), or "*".
     pub peer: String,
     pub from: Vec<i64>,
+    /// Whether `from` names users or channels: the two share one id space.
+    #[serde(default)]
+    pub sender: Sender,
     pub trigger: Trigger,
+    /// Messages shorter than this many characters are not admitted.
+    #[serde(default)]
+    pub min_chars: usize,
     pub trust: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Sender {
+    #[default]
+    User,
+    /// A channel posting in its discussion group.
+    Channel,
+}
+
+impl Sender {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Sender::User => "user",
+            Sender::Channel => "channel",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -77,6 +101,10 @@ pub struct Tier {
     /// shell still reads the current code. The runner pulls, not the model.
     #[serde(default)]
     pub git_pull: bool,
+    /// Split the run's answer in two: a public reply in the chat and a private
+    /// message to this peer. The run must then end with a JSON object.
+    #[serde(default)]
+    pub dm_peer: Option<String>,
     pub instructions: String,
 }
 
@@ -180,7 +208,12 @@ impl Config {
             }
             if r.from.iter().any(|&id| id <= 0) {
                 out.push(format!(
-                    "{at}: from must hold user ids, which are positive; chat ids go in peer"
+                    "{at}: from must hold bare user or channel ids, which are positive; chat ids go in peer"
+                ));
+            }
+            if r.sender == Sender::Channel && r.trigger != Trigger::Any {
+                out.push(format!(
+                    "{at}: a channel post never mentions or replies to the agent; use trigger = \"any\""
                 ));
             }
             if r.from.contains(&self.agent_id) {
@@ -211,6 +244,11 @@ impl Config {
                 out.push(format!(
                     "{at}: tools applies only with restricted = true; without it every tool is available"
                 ));
+            }
+            if let Some(dm) = &t.dm_peer
+                && (dm == "*" || !valid_peer(dm))
+            {
+                out.push(format!("{at}: dm_peer {dm:?} must be a numeric dialog id"));
             }
             if t.restricted {
                 if t.tools.as_deref().is_none_or(|s| s.trim().is_empty()) {

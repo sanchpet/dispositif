@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::config::{Config, Rule, Trigger};
+use crate::config::{Config, Rule, Sender, Trigger};
 use crate::tg::Message;
 
 /// The message mentions the agent by username, or replies to one of its messages.
@@ -26,6 +26,7 @@ pub fn is_addressed(msg: &Message, cfg: &Config, agent_msg_ids: &BTreeSet<i64>) 
 
 /// First rule that admits this message, or None. The agent's own messages never match;
 /// in a direct message `mention_or_reply` is satisfied by the conversation itself.
+/// A rule for users never admits a channel with the same numeric id, nor the reverse.
 pub fn match_rule<'a>(
     cfg: &'a Config,
     peer: &str,
@@ -37,9 +38,17 @@ pub fn match_rule<'a>(
     if sender == cfg.agent_id {
         return None;
     }
+    let kind = match msg.from_type.as_deref() {
+        None | Some("user") => Sender::User,
+        Some("channel") => Sender::Channel,
+        Some(_) => return None,
+    };
+    let chars = msg.text().chars().count();
     cfg.rules.iter().find(|rule| {
         (rule.peer == "*" || rule.peer == peer)
+            && rule.sender == kind
             && rule.from.contains(&sender)
+            && chars >= rule.min_chars
             && (rule.trigger == Trigger::Any || is_dm || is_addressed(msg, cfg, agent_msg_ids))
     })
 }
