@@ -438,6 +438,8 @@ mod runner {
             reply_to: None,
             kind: Some("text".into()),
             text: "what time is it?".into(),
+            post_link: None,
+            date: None,
         }
     }
 
@@ -798,5 +800,178 @@ mod runner {
             .unwrap()
             .to_owned();
         assert_eq!(text.chars().count(), 4000);
+    }
+
+    const GROUP: &str = "-1000006";
+
+    fn post_msg(id: i64, post: i64, text: &str, date: f64) -> Value {
+        json!({"id": id, "fromId": 1000007, "fromName": "Diary", "fromType": "channel",
+               "text": text, "date": date, "type": "text",
+               "forward": {"channelPost": post, "from": {"username": "diary"}}})
+    }
+
+    fn post_event(id: i64, post: i64, text: &str) -> Event {
+        Event {
+            trust: "channel".into(),
+            rule: "channel".into(),
+            peer: GROUP.into(),
+            chat: "Diary chat".into(),
+            id,
+            from: Some("Diary".into()),
+            from_id: Some(1000007),
+            text: text.into(),
+            post_link: Some(format!("https://t.me/diary/{post}")),
+            date: Some(1_200.0),
+            ..event()
+        }
+    }
+
+    fn channel_setup(body: &str) -> (Fake, tempfile::TempDir, Config) {
+        let (fake, tmp, cfg) = setup(body);
+        fake.add_message(GROUP, post_msg(20, 7, "the post", 1_200.0));
+        (fake, tmp, cfg)
+    }
+
+    fn texts_to(log: &[Req], peer: &str) -> Vec<(String, Value)> {
+        sent(log)
+            .iter()
+            .filter(|m| m["peer"] == peer)
+            .map(|m| (m["text"].as_str().unwrap().to_owned(), m["replyTo"].clone()))
+            .collect()
+    }
+
+    #[test]
+    fn channel_post_gets_a_comment_and_a_private_note() {
+        let _serial = serial();
+        let (fake, tmp, cfg) = channel_setup(
+            r#"printf '%s' '{"result":"thinking...\n{\"comment\": \"public words\", \"dm\": \"private words\"}","session_id":"s","is_error":false}'"#,
+        );
+        let dir = StateDir::new(tmp.path().join("state"));
+        handle(
+            &cfg,
+            &dir,
+            &mut Sessions::new(),
+            &post_event(20, 7, "the post"),
+        )
+        .unwrap();
+        let log = fake.take_log();
+        assert_eq!(texts_to(&log, GROUP), [("public words".into(), json!(20))]);
+        assert_eq!(
+            texts_to(&log, "1000002"),
+            [("private words".into(), Value::Null)]
+        );
+        let stdin =
+            std::fs::read_to_string(tmp.path().canonicalize().unwrap().join("stdin")).unwrap();
+        assert!(stdin.contains("Output contract"), "{stdin}");
+        assert!(stdin.contains("from Diary (channel post https://t.me/diary/7), sent 1970-01-01"));
+        assert!(stdin.ends_with(":\nthe post"));
+        fake.assert_sessions_closed(&log);
+    }
+
+    #[test]
+    fn nothing_public_unless_the_answer_parses() {
+        let _serial = serial();
+        for body in [
+            r#"echo '{"result":"plain prose, no json","session_id":"s","is_error":false}'"#,
+            "echo boom >&2; exit 3",
+        ] {
+            let (fake, tmp, cfg) = channel_setup(body);
+            let dir = StateDir::new(tmp.path().join("state"));
+            handle(
+                &cfg,
+                &dir,
+                &mut Sessions::new(),
+                &post_event(20, 7, "the post"),
+            )
+            .unwrap();
+            let log = fake.take_log();
+            assert!(texts_to(&log, GROUP).is_empty(), "{body}: {log:?}");
+            assert_eq!(texts_to(&log, "1000002").len(), 1, "{body}");
+        }
+    }
+
+    #[test]
+    fn empty_comment_is_silence_and_a_refused_one_reaches_the_owner() {
+        let _serial = serial();
+        let (fake, tmp, cfg) = channel_setup(
+            r#"echo '{"result":"{\"comment\": \"\", \"dm\": \"\"}","session_id":"s","is_error":false}'"#,
+        );
+        let dir = StateDir::new(tmp.path().join("state"));
+        handle(
+            &cfg,
+            &dir,
+            &mut Sessions::new(),
+            &post_event(20, 7, "the post"),
+        )
+        .unwrap();
+        assert!(sent(&fake.take_log()).is_empty());
+
+        let (fake, tmp, cfg) = channel_setup(
+            r#"echo '{"result":"{\"comment\": \"words\"}","session_id":"s","is_error":false}'"#,
+        );
+        fake.world.lock().unwrap().fail_send = 1;
+        let dir = StateDir::new(tmp.path().join("state"));
+        handle(
+            &cfg,
+            &dir,
+            &mut Sessions::new(),
+            &post_event(20, 7, "the post"),
+        )
+        .unwrap();
+        let log = fake.take_log();
+        assert_eq!(texts_to(&log, GROUP).len(), 1, "tried once");
+        assert_eq!(texts_to(&log, "1000002"), [("words".into(), Value::Null)]);
+    }
+
+    #[test]
+    fn a_split_post_is_answered_once_on_its_last_part() {
+        use dispositif::runner::{Answered, coalesce};
+        let fake = Fake::start();
+        let cfg = config(&fake.url, "claude", "/tmp");
+        fake.add_message(GROUP, post_msg(19, 6, "an earlier post", 1_000.0));
+        fake.add_message(GROUP, post_msg(20, 7, "part one", 1_200.0));
+        fake.add_message(GROUP, post_msg(21, 8, "part two", 1_213.0));
+        fake.add_message(GROUP, msg(22, 1000009, "a reader", 1_300.0));
+        let mut answered = Answered::default();
+        let merged = coalesce(&cfg, &mut answered, &post_event(20, 7, "part one"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(merged.id, 21);
+        assert_eq!(merged.text, "part one\n\npart two");
+        assert_eq!(merged.post_link.as_deref(), Some("https://t.me/diary/7"));
+        assert!(
+            coalesce(&cfg, &mut answered, &post_event(21, 8, "part two"))
+                .unwrap()
+                .is_none()
+        );
+        // Not a channel post: passed through untouched.
+        assert_eq!(
+            coalesce(&cfg, &mut answered, &event()).unwrap().unwrap(),
+            event()
+        );
+        fake.assert_sessions_closed(&fake.take_log());
+    }
+
+    #[test]
+    fn a_tier_without_resume_starts_fresh() {
+        let _serial = serial();
+        let (fake, tmp, cfg) = channel_setup(
+            r#"echo '{"result":"{\"comment\": \"c\"}","session_id":"new","is_error":false}'"#,
+        );
+        let dir = StateDir::new(tmp.path().join("state"));
+        let mut sessions = Sessions::new();
+        sessions.insert(
+            format!("{GROUP}:channel"),
+            dispositif::state::Session {
+                id: "old".into(),
+                at: dispositif::now(),
+            },
+        );
+        handle(&cfg, &dir, &mut sessions, &post_event(20, 7, "the post")).unwrap();
+        let argv =
+            std::fs::read_to_string(tmp.path().canonicalize().unwrap().join("argv")).unwrap();
+        assert!(!argv.contains("--resume"), "{argv}");
+        assert_eq!(sessions[&format!("{GROUP}:channel")].id, "new");
+        fake.take_log();
     }
 }

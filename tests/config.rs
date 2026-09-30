@@ -129,7 +129,10 @@ fn malformed_from() {
     assert!(e.contains("from is empty"), "{e}");
     for bad in ["[0]", "[-1000003]", "[1000002, -5]"] {
         let e = problems(&BASE.replace("from = [1000002]", &format!("from = {bad}")));
-        assert!(e.contains("from must hold user ids"), "{bad}: {e}");
+        assert!(
+            e.contains("from must hold bare user or channel ids"),
+            "{bad}: {e}"
+        );
     }
     let e = problems(&BASE.replace("from = [1000002]", r#"from = ["1000002"]"#));
     assert!(e.contains("from"), "{e}");
@@ -198,4 +201,32 @@ fn tools_without_restricted() {
 fn mcp_url_must_be_plain_http() {
     let e = problems(&format!("mcp_url = \"https://example.com/mcp\"\n{BASE}"));
     assert!(e.contains("must be http://"), "{e}");
+}
+
+#[test]
+fn channel_rules_and_dm_peer() {
+    let channel = BASE.replace(
+        r#"trigger = "any""#,
+        "sender = \"channel\"\ntrigger = \"mention_or_reply\"",
+    );
+    let e = problems(&channel);
+    assert!(e.contains("use trigger = \"any\""), "{e}");
+    Config::parse(&BASE.replace(
+        r#"trigger = "any""#,
+        "sender = \"channel\"\ntrigger = \"any\"\nmin_chars = 300",
+    ))
+    .unwrap();
+    for bad in ["*", "me", ""] {
+        let e = problems(&BASE.replace(
+            r#"instructions = "i""#,
+            &format!("dm_peer = {bad:?}\ninstructions = \"i\""),
+        ));
+        assert!(e.contains("dm_peer"), "{bad}: {e}");
+    }
+    Config::parse(&BASE.replace(
+        r#"instructions = "i""#,
+        "dm_peer = \"1000002\"\ninstructions = \"i\"",
+    ))
+    .unwrap();
+    problems(&BASE.replace(r#"trigger = "any""#, "sender = \"bot\"\ntrigger = \"any\""));
 }

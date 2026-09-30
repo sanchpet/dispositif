@@ -106,3 +106,51 @@ fn mention_must_end_the_username() {
         assert!(got.is_some(), "{text:?} not admitted");
     }
 }
+
+const CHANNEL: i64 = 1000007;
+const CHANNEL_CHAT: &str = "-1000006";
+
+fn post(sender: i64, kind: &str, chars: usize) -> Message {
+    Message {
+        from_type: Some(kind.into()),
+        ..m(sender, &"ж".repeat(chars), None)
+    }
+}
+
+#[test]
+fn channel_posts() {
+    let cfg = cfg();
+    let none = BTreeSet::new();
+    let hit = |msg: &Message, peer: &str| {
+        match_rule(&cfg, peer, msg, &none, false).map(|r| r.name.as_str())
+    };
+    assert_eq!(
+        hit(&post(CHANNEL, "channel", 200), CHANNEL_CHAT),
+        Some("channel")
+    );
+    assert_eq!(
+        hit(&post(CHANNEL, "channel", 199), CHANNEL_CHAT),
+        None,
+        "too short"
+    );
+    assert_eq!(
+        hit(&post(CHANNEL, "channel", 500), FRIENDS_CHAT),
+        None,
+        "other chat"
+    );
+    // A user whose id equals the channel's is not the channel.
+    assert_eq!(hit(&post(CHANNEL, "user", 500), CHANNEL_CHAT), None);
+    // Nor is a channel whose id equals the owner's the owner.
+    let spoof = post(OWNER, "channel", 10);
+    assert_eq!(
+        match_rule(&cfg, OWNER_DM, &spoof, &none, true).map(|r| r.name.as_str()),
+        None
+    );
+    // Anonymous admins and other sender kinds match no rule.
+    assert_eq!(hit(&post(OWNER, "chat", 10), CHANNEL_CHAT), None);
+    // An owner message without a type still counts as a user's.
+    assert_eq!(
+        match_rule(&cfg, OWNER_DM, &m(OWNER, "hi", None), &none, true).map(|r| r.name.as_str()),
+        Some("owner-dm")
+    );
+}

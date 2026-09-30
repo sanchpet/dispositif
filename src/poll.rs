@@ -30,6 +30,12 @@ pub struct Event {
     #[serde(rename = "type")]
     pub kind: Option<String>,
     pub text: String,
+    /// The channel post a discussion-group message forwards.
+    #[serde(rename = "postLink", skip_serializing_if = "Option::is_none")]
+    pub post_link: Option<String>,
+    /// Unix seconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date: Option<f64>,
 }
 
 /// Read every dialog that may hold something new and hand each admitted message
@@ -108,6 +114,8 @@ pub fn poll(
                 reply_to: m.reply_to_id(),
                 kind: m.kind.clone(),
                 text: m.text().to_owned(),
+                post_link: m.post_link(),
+                date: m.date,
             });
             if let Err(e) = mcp.call(
                 "tg_messages_mark_read",

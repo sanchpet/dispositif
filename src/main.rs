@@ -63,12 +63,18 @@ fn print_check(path: &std::path::Path, cfg: &Config) {
     for r in &cfg.rules {
         let from: Vec<String> = r.from.iter().map(i64::to_string).collect();
         println!(
-            "  {:<16} peer={:<16} from=[{}] trigger={} trust={}",
+            "  {:<16} peer={:<16} from=[{}] sender={} trigger={} trust={}{}",
             r.name,
             r.peer,
             from.join(","),
+            r.sender.as_str(),
             r.trigger.as_str(),
-            r.trust
+            r.trust,
+            if r.min_chars > 0 {
+                format!(" min_chars={}", r.min_chars)
+            } else {
+                String::new()
+            }
         );
     }
     println!("tiers:");
@@ -79,6 +85,12 @@ fn print_check(path: &std::path::Path, cfg: &Config) {
         }
         if let Some(mode) = &t.permission_mode {
             line += &format!(" permission_mode={mode}");
+        }
+        if let Some(dm) = &t.dm_peer {
+            line += &format!(" dm_peer={dm}");
+        }
+        if !t.resume {
+            line += " resume=false";
         }
         if !cfg.rules.iter().any(|r| r.trust == *name) {
             line += " (no rule uses it)";
