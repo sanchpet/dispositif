@@ -929,7 +929,7 @@ mod runner {
         let cfg = config(&fake.url, "claude", "/tmp");
         fake.add_message(GROUP, post_msg(19, 6, "an earlier post", 1_000.0));
         fake.add_message(GROUP, post_msg(20, 7, "part one", 1_200.0));
-        fake.add_message(GROUP, post_msg(21, 8, "part two", 1_201.0));
+        fake.add_message(GROUP, post_msg(21, 8, "part two", 1_213.0));
         fake.add_message(GROUP, msg(22, 1000009, "a reader", 1_300.0));
         let mut answered = Answered::default();
         let merged = coalesce(&cfg, &mut answered, &post_event(20, 7, "part one"))

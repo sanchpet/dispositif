@@ -77,9 +77,9 @@ pub fn run(cfg: &Config, dir: &StateDir) -> Result<()> {
 }
 
 /// Parts of one long channel post arrive this close together.
-const SPLIT_WINDOW_SECS: f64 = 10.0;
+const SPLIT_WINDOW_SECS: f64 = 30.0;
 /// A channel post is answered once it is this old, so that all its parts are in.
-const SETTLE_SECS: f64 = 15.0;
+const SETTLE_SECS: f64 = 35.0;
 /// Remembered answered parts; a post's later parts arrive within a cycle or two.
 const ANSWERED_KEPT: usize = 200;
 

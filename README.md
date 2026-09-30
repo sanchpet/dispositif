@@ -13,7 +13,7 @@ It runs on macOS and Linux and needs an mcp-tg daemon serving MCP over streamabl
 
 A tier with `dm_peer` splits the answer. The run must end with a JSON object `{"comment": "...", "dm": "..."}`: the comment is posted as the reply, the note goes privately to `dm_peer`, and an empty string sends nothing. Nothing reaches the reply chat unless the run succeeded and its answer parsed; a failure or unparsed text goes to `dm_peer` alone, and so does a comment Telegram refused.
 
-This is how the agent comments on a channel. A channel's posts reach its discussion group as messages sent by the channel, and a reply to one of them shows up under the post as a comment. A rule with `sender = "channel"` admits them; `min_chars` skips short ones. A long post that the client splits into several messages is answered once: the runner waits until the post is 15 seconds old, joins the consecutive parts sent within 10 seconds of each other, and replies to the last part.
+This is how the agent comments on a channel. A channel's posts reach its discussion group as messages sent by the channel, and a reply to one of them shows up under the post as a comment. A rule with `sender = "channel"` admits them; `min_chars` skips short ones. A long post that the client splits into several messages is answered once: the runner waits until the post is 35 seconds old, joins the consecutive parts sent within 30 seconds of each other, and replies to the last part.
 
 When dispositif sees a chat for the first time, it skips messages dated before the process started and processes newer ones. So a restart with empty state does not answer old history, while a message that arrives in a new chat after start is still answered.
 
