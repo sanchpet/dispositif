@@ -436,6 +436,17 @@ pub fn build_prompt(cfg: &Config, tier: &Tier, ev: &Event, ctx: &str) -> String 
         .as_deref()
         .map(|l| format!(" (channel post {l})"))
         .unwrap_or_default();
+    // Without a date a run guesses when earlier posts were written, and guesses wrong.
+    let when = ev
+        .date
+        .and_then(|d| chrono::DateTime::from_timestamp(d as i64, 0))
+        .map(|t| {
+            format!(
+                ", sent {}",
+                t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M %Z")
+            )
+        })
+        .unwrap_or_default();
     let mut parts = vec![
         cfg.preamble.trim().to_owned(),
         tier.instructions.trim().to_owned(),
@@ -450,7 +461,7 @@ pub fn build_prompt(cfg: &Config, tier: &Tier, ev: &Event, ctx: &str) -> String 
         ev.chat, ev.peer
     ));
     parts.push(format!(
-        "Answer this message [{}] from {from}{post}:\n{}",
+        "Answer this message [{}] from {from}{post}{when}:\n{}",
         ev.id, ev.text
     ));
     parts.join("\n\n")

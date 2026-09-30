@@ -863,7 +863,8 @@ mod runner {
         let stdin =
             std::fs::read_to_string(tmp.path().canonicalize().unwrap().join("stdin")).unwrap();
         assert!(stdin.contains("Output contract"), "{stdin}");
-        assert!(stdin.contains("from Diary (channel post https://t.me/diary/7):\nthe post"));
+        assert!(stdin.contains("from Diary (channel post https://t.me/diary/7), sent 1970-01-01"));
+        assert!(stdin.ends_with(":\nthe post"));
         fake.assert_sessions_closed(&log);
     }
 
