@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/sanchpet/dispositif/compare/v0.2.1...v0.3.0) (2026-09-30)
+
+
+### Features
+
+* **runner:** comment on channel posts and note the owner privately ([#8](https://github.com/sanchpet/dispositif/issues/8)) ([316fbce](https://github.com/sanchpet/dispositif/commit/316fbcebfd406d9b3c9eb3c9e083ee9e612807ca))
+
 ## [0.2.1](https://github.com/sanchpet/dispositif/compare/v0.2.0...v0.2.1) (2026-09-27)
 
 
