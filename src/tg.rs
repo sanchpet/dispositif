@@ -61,6 +61,14 @@ pub struct Forward {
 pub struct ForwardFrom {
     #[serde(default)]
     pub username: Option<String>,
+    #[serde(default)]
+    pub peer: Option<ForwardPeer>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ForwardPeer {
+    #[serde(default)]
+    pub id: Option<i64>,
 }
 
 impl Message {
@@ -77,11 +85,16 @@ impl Message {
         self.from_type.as_deref() == Some("channel")
     }
 
-    /// Public link to the channel post this message forwards, if it forwards one.
+    /// Link to the channel post this message forwards, if it forwards one. A
+    /// private channel has no username and is linked by its bare id.
     pub fn post_link(&self) -> Option<String> {
         let f = self.forward.as_ref()?;
-        let user = f.from.as_ref()?.username.as_deref()?;
-        Some(format!("https://t.me/{user}/{}", f.channel_post?))
+        let (post, from) = (f.channel_post?, f.from.as_ref()?);
+        match (&from.username, from.peer.as_ref().and_then(|p| p.id)) {
+            (Some(user), _) => Some(format!("https://t.me/{user}/{post}")),
+            (None, Some(id)) => Some(format!("https://t.me/c/{id}/{post}")),
+            (None, None) => None,
+        }
     }
 }
 
@@ -95,4 +108,31 @@ pub struct DialogList {
 pub struct MessageList {
     #[serde(default)]
     pub messages: Vec<Message>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn post_links() {
+        let m = |fwd: serde_json::Value| -> Message {
+            serde_json::from_value(serde_json::json!({"id": 1, "forward": fwd})).unwrap()
+        };
+        let public = m(
+            serde_json::json!({"channelPost": 319, "from": {"username": "diary", "peer": {"id": 42}}}),
+        );
+        assert_eq!(
+            public.post_link().as_deref(),
+            Some("https://t.me/diary/319")
+        );
+        let private = m(serde_json::json!({"channelPost": 5, "from": {"peer": {"id": 42}}}));
+        assert_eq!(private.post_link().as_deref(), Some("https://t.me/c/42/5"));
+        assert_eq!(
+            m(serde_json::json!({"from": {"username": "diary"}})).post_link(),
+            None
+        );
+        let plain: Message = serde_json::from_value(serde_json::json!({"id": 1})).unwrap();
+        assert_eq!(plain.post_link(), None);
+    }
 }
