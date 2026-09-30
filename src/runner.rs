@@ -548,8 +548,9 @@ fn run_event(
         .get(&ev.trust)
         .ok_or_else(|| anyhow!("no tier {:?}", ev.trust))?;
     let key = format!("{}:{}", ev.peer, ev.trust);
-    let resume =
-        fresh_session(sessions, &key, cfg.session_ttl_secs, crate::now()).map(str::to_owned);
+    let resume = fresh_session(sessions, &key, cfg.session_ttl_secs, crate::now())
+        .filter(|_| tier.resume)
+        .map(str::to_owned);
     if tier.git_pull {
         git_pull(&expand_tilde(&tier.cwd));
     }

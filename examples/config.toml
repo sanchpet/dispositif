@@ -94,6 +94,9 @@ trust = "channel"
 # dm_peer:         split the answer: the run ends with {"comment": ..., "dm": ...};
 #                  the comment is the public reply, dm goes privately to this peer.
 #                  A failed or unparsed run reaches dm_peer only
+# resume:          resume the chat's previous claude session (default true); turn it
+#                  off when runs read their memory from the chat and resuming only
+#                  adds cost
 # instructions:    added to the prompt after the preamble
 
 [tier.full]
@@ -119,6 +122,7 @@ owner; say so. Say nothing about the owner personally.
 cwd = "~/notes"
 permission_mode = "auto"
 dm_peer = "1000002"
+resume = false
 instructions = """
 The message is a post from the owner's own channel. Comment on it for the
 channel's readers, and tell the owner privately what it changes in his notes.

@@ -951,4 +951,27 @@ mod runner {
         );
         fake.assert_sessions_closed(&fake.take_log());
     }
+
+    #[test]
+    fn a_tier_without_resume_starts_fresh() {
+        let _serial = serial();
+        let (fake, tmp, cfg) = channel_setup(
+            r#"echo '{"result":"{\"comment\": \"c\"}","session_id":"new","is_error":false}'"#,
+        );
+        let dir = StateDir::new(tmp.path().join("state"));
+        let mut sessions = Sessions::new();
+        sessions.insert(
+            format!("{GROUP}:channel"),
+            dispositif::state::Session {
+                id: "old".into(),
+                at: dispositif::now(),
+            },
+        );
+        handle(&cfg, &dir, &mut sessions, &post_event(20, 7, "the post")).unwrap();
+        let argv =
+            std::fs::read_to_string(tmp.path().canonicalize().unwrap().join("argv")).unwrap();
+        assert!(!argv.contains("--resume"), "{argv}");
+        assert_eq!(sessions[&format!("{GROUP}:channel")].id, "new");
+        fake.take_log();
+    }
 }

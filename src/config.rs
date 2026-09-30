@@ -105,7 +105,15 @@ pub struct Tier {
     /// message to this peer. The run must then end with a JSON object.
     #[serde(default)]
     pub dm_peer: Option<String>,
+    /// Resume the chat's previous claude session. Off for a tier whose runs read
+    /// their memory from the chat itself: a resumed session only adds cost.
+    #[serde(default = "default_resume")]
+    pub resume: bool,
     pub instructions: String,
+}
+
+fn default_resume() -> bool {
+    true
 }
 
 fn default_mcp_url() -> String {

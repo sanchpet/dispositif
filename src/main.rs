@@ -89,6 +89,9 @@ fn print_check(path: &std::path::Path, cfg: &Config) {
         if let Some(dm) = &t.dm_peer {
             line += &format!(" dm_peer={dm}");
         }
+        if !t.resume {
+            line += " resume=false";
+        }
         if !cfg.rules.iter().any(|r| r.trust == *name) {
             line += " (no rule uses it)";
         }
