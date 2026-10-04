@@ -75,17 +75,14 @@ pub fn poll(
         // MTProto reports like a channel. Broadcast posts simply match no rule.
         if d.unread_count.unwrap_or(0) == 0
             && !explicit.contains(peer)
+            && !state.held.contains(peer)
             && state.last.contains_key(peer)
         {
             continue;
         }
-        let mut msgs = mcp
-            .call_as::<MessageList>(
-                "tg_messages_list",
-                json!({"peer": peer, "limit": 30, "format": "json"}),
-            )?
-            .messages;
-        msgs.sort_by_key(|m| m.id);
+        // Before the read, so a message missing from it is newer than `now`.
+        let now = crate::now();
+        let msgs = list_new(mcp, peer, state.last.get(peer).copied(), started)?;
         let mut agent_ids: BTreeSet<i64> = state
             .agent_ids
             .get(peer)
@@ -109,23 +106,30 @@ pub fn poll(
         };
         state.last.insert(peer.to_owned(), last);
         let is_dm = d.kind.as_deref() == Some("user");
-        let fresh: Vec<&Message> = msgs.iter().filter(|m| m.id > last).collect();
-        for m in &fresh {
-            learn_reply_target(mcp, cfg, peer, m, &mut agent_ids)?;
+        // In id order, so a failed lookup still lets the batches before it through.
+        let mut admitted = Vec::new();
+        let mut failed = None;
+        for m in msgs.iter().filter(|m| m.id > last) {
+            if let Err(e) = learn_reply_target(mcp, cfg, peer, m, &mut agent_ids) {
+                failed = Some((m, e));
+                break;
+            }
+            admitted.push((m, match_rule(cfg, peer, m, &agent_ids, is_dm)));
         }
-        let admitted = fresh
-            .into_iter()
-            .map(|m| (m, match_rule(cfg, peer, m, &agent_ids, is_dm)))
-            .collect();
         let quiet = cfg.batch_quiet_secs as f64;
         let found = batches(admitted, quiet);
-        let (count, now) = (found.len(), crate::now());
+        let count = found.len();
         let chat = d.title.as_deref().unwrap_or("").trim();
         for (i, b) in found.into_iter().enumerate() {
             let newest = b.newest();
             // The sender may still be adding to it. `last` stays before it, so the
             // wait lives in the chat itself and a restart loses nothing.
-            if i + 1 == count && still_open(newest, quiet, now) {
+            if i + 1 == count
+                && (still_open(newest, quiet, now)
+                    || failed
+                        .as_ref()
+                        .is_some_and(|(m, _)| b.takes(m, None, quiet)))
+            {
                 break;
             }
             // Consumed before the mark: a failed mark must not bring the event back.
@@ -144,13 +148,61 @@ pub fn poll(
                 ));
             }
         }
+        if msgs.last().is_some_and(|m| m.id > state.last[peer]) {
+            state.held.insert(peer.to_owned());
+        } else {
+            state.held.remove(peer);
+        }
         let kept: Vec<i64> = agent_ids.into_iter().collect();
         let skip = kept.len().saturating_sub(AGENT_IDS_KEPT);
         state
             .agent_ids
             .insert(peer.to_owned(), kept[skip..].to_vec());
+        if let Some((_, e)) = failed {
+            return Err(e);
+        }
     }
     Ok(())
+}
+
+/// Messages per `tg_messages_list` page, and pages read per chat and cycle.
+const PAGE: usize = 30;
+const MAX_PAGES: usize = 10;
+
+/// The chat's messages newer than `last`, oldest first, paging back until a page
+/// reaches it: an open batch keeps `last` behind while more arrives on top of it.
+/// In a chat seen for the first time, back to a message from before `started`.
+fn list_new(mcp: &mut Mcp, peer: &str, last: Option<i64>, started: f64) -> Result<Vec<Message>> {
+    let mut msgs: Vec<Message> = Vec::new();
+    let mut offset = None;
+    for _ in 0..MAX_PAGES {
+        let mut args = json!({"peer": peer, "limit": PAGE, "format": "json"});
+        if let Some(id) = offset {
+            args["offsetId"] = json!(id);
+        }
+        let page = mcp
+            .call_as::<MessageList>("tg_messages_list", args)?
+            .messages;
+        let full = page.len() >= PAGE;
+        let oldest = page.iter().min_by_key(|m| m.id).map(|m| (m.id, m.date));
+        msgs.extend(page);
+        offset = match (last, oldest) {
+            (Some(last), Some((id, _))) if full && id > last => Some(id),
+            (None, Some((id, date))) if full && date.is_some_and(|d| d >= started) => Some(id),
+            _ => None,
+        };
+        if offset.is_none() {
+            break;
+        }
+    }
+    if let Some(oldest) = offset {
+        crate::log(&format!(
+            "gap peer={peer}: messages before {oldest} not read, {MAX_PAGES} pages deep"
+        ));
+    }
+    msgs.sort_by_key(|m| m.id);
+    msgs.dedup_by_key(|m| m.id);
+    Ok(msgs)
 }
 
 /// Consecutive new messages of one sender in one chat, answered as one event.
@@ -181,9 +233,16 @@ fn batches<'a>(msgs: Vec<(&'a Message, Option<&'a Rule>)>, quiet: f64) -> Vec<Ba
     out
 }
 
-/// Whether the sender of `newest` may still be adding to its batch.
+/// Whether the sender of `newest` may still be adding to its batch. Dates are whole
+/// seconds, so a message dated up to `quiet` after it, which `takes` would join, can
+/// arrive until a second later. A date further ahead than `quiet` is clock skew:
+/// waiting on it would delay the answer by the skew.
 fn still_open(newest: &Message, quiet: f64, now: f64) -> bool {
-    quiet > 0.0 && !newest.from_channel() && newest.date.is_some_and(|d| now - d < quiet)
+    quiet > 0.0
+        && !newest.from_channel()
+        && newest
+            .date
+            .is_some_and(|d| (-quiet..=quiet).contains(&(now.floor() - d)))
 }
 
 impl<'a> Batch<'a> {
@@ -439,6 +498,27 @@ mod tests {
             })
             .collect();
         assert_eq!(got, [(vec![1, 2], Some("a")), (vec![3, 4], Some("b"))]);
+    }
+
+    #[test]
+    fn a_batch_stays_open_while_a_message_could_still_join() {
+        let at = |id, date| Message {
+            id,
+            from_id: Some(5),
+            date: Some(date),
+            ..Default::default()
+        };
+        let newest = at(1, 100.0);
+        let open = |now| still_open(&newest, 5.0, now);
+        // Dated 105 at any moment of that second, a message still joins.
+        assert!(open(105.0) && open(105.99));
+        assert!(!open(106.0));
+        let found = batches(vec![(&newest, None)], 5.0);
+        assert!(found[0].takes(&at(2, 105.0), None, 5.0));
+        assert!(!found[0].takes(&at(2, 106.0), None, 5.0));
+        // A clock a little behind Telegram's waits; one far behind does not.
+        assert!(open(95.0));
+        assert!(!open(94.0));
     }
 
     #[test]

@@ -39,6 +39,8 @@ struct World {
     fail_mark_read: usize,
     /// This many tg_messages_send calls are refused before they succeed again.
     fail_send: usize,
+    /// This many tg_messages_get calls fail before they succeed again.
+    fail_get: usize,
 }
 
 struct Fake {
@@ -150,6 +152,13 @@ fn serve(
                     "isError": true, "content": [{"type": "text", "text": "text looks like markdown"}]}});
                 return Response::from_string(body.to_string());
             }
+            if tool == "tg_messages_get" && w.fail_get > 0 {
+                w.fail_get -= 1;
+                w.log.push(Req::Call { sid, tool, args });
+                let body = json!({"jsonrpc": "2.0", "id": rpc["id"], "result": {
+                    "isError": true, "content": [{"type": "text", "text": "timeout"}]}});
+                return Response::from_string(body.to_string());
+            }
             if tool == "tg_messages_mark_read" && w.fail_mark_read > 0 {
                 w.fail_mark_read -= 1;
                 w.log.push(Req::Call { sid, tool, args });
@@ -176,6 +185,14 @@ fn tool_result(w: &World, tool: &str, args: &Value) -> Value {
         "tg_dialogs_list" => json!({"dialogs": w.dialogs}),
         "tg_messages_list" => {
             let limit = args["limit"].as_u64().unwrap() as usize;
+            // As MTProto's offset_id: only messages older than it.
+            let msgs: Vec<Value> = match args["offsetId"].as_i64() {
+                Some(offset) => msgs
+                    .into_iter()
+                    .filter(|m| m["id"].as_i64().unwrap() < offset)
+                    .collect(),
+                None => msgs,
+            };
             let tail = &msgs[msgs.len().saturating_sub(limit)..];
             let newest_first: Vec<_> = tail.iter().rev().cloned().collect();
             json!({"messages": newest_first})
@@ -384,6 +401,31 @@ fn shapes(events: &[Event]) -> Vec<(i64, Vec<i64>)> {
         .collect()
 }
 
+/// Now, as Telegram dates a message: in whole seconds.
+fn tg_now() -> f64 {
+    dispositif::now().floor()
+}
+
+/// Sleep until a batch whose newest message is dated `date` can no longer grow.
+fn wait_closed(date: f64, cfg: &Config) {
+    let left = date + cfg.batch_quiet_secs as f64 + 1.0 - dispositif::now();
+    if left > 0.0 {
+        thread::sleep(std::time::Duration::from_secs_f64(left + 0.05));
+    }
+}
+
+fn poll_result(
+    fake: &Fake,
+    cfg: &Config,
+    dir: &StateDir,
+    state: &mut State,
+) -> (Vec<Event>, anyhow::Result<()>) {
+    let mut events = Vec::new();
+    let mut mcp = Mcp::new(&fake.url);
+    let res = poll_cycle(&mut mcp, cfg, dir, state, STARTED, &mut |e| events.push(e));
+    (events, res)
+}
+
 fn owner_dm(fake: &Fake) {
     fake.set_dialog("1000002", "user", "Owner", 1);
     fake.add_message("1000002", msg(2, 1000001, "old answer", 900.0));
@@ -500,19 +542,16 @@ fn a_batch_waits_for_its_sender_across_cycles() {
     let dir = StateDir::new(tmp.path());
     let mut state = State::default();
     owner_dm(&fake);
-    let now = dispositif::now();
+    let now = tg_now();
     fake.add_message("1000002", msg(3, 1000002, "save this", now));
 
     assert!(poll_once(&fake, &cfg, &dir, &mut state).is_empty());
     assert_eq!(state.last["1000002"], 2);
     assert!(Fake::calls(&fake.take_log(), "tg_messages_mark_read").is_empty());
 
-    fake.add_message(
-        "1000002",
-        forward(4, 1000002, "https://example.com/x", now + 0.2),
-    );
+    fake.add_message("1000002", forward(4, 1000002, "https://example.com/x", now));
     assert!(poll_once(&fake, &cfg, &dir, &mut state).is_empty());
-    thread::sleep(std::time::Duration::from_millis(1_300));
+    wait_closed(now, &cfg);
     let events = poll_once(&fake, &cfg, &dir, &mut state);
     assert_eq!(shapes(&events), [(4, vec![3, 4])]);
     assert!(poll_once(&fake, &cfg, &dir, &mut state).is_empty());
@@ -526,22 +565,144 @@ fn a_restart_inside_an_open_batch_loses_and_repeats_nothing() {
     cfg.batch_quiet_secs = 1;
     let dir = StateDir::new(tmp.path());
     owner_dm(&fake);
-    fake.add_message("1000002", msg(3, 1000002, "save this", dispositif::now()));
+    let now = tg_now();
+    fake.add_message("1000002", msg(3, 1000002, "save this", now));
     assert!(poll_once(&fake, &cfg, &dir, &mut State::default()).is_empty());
     assert_eq!(dir.load_state().unwrap().last["1000002"], 2);
 
     // The process dies; the next one starts from what is on disk.
-    fake.add_message(
-        "1000002",
-        forward(4, 1000002, "https://example.com/x", dispositif::now()),
-    );
-    thread::sleep(std::time::Duration::from_millis(1_300));
+    fake.add_message("1000002", forward(4, 1000002, "https://example.com/x", now));
+    wait_closed(now, &cfg);
     let mut state = dir.load_state().unwrap();
     let events = poll_once(&fake, &cfg, &dir, &mut state);
     assert_eq!(shapes(&events), [(4, vec![3, 4])]);
 
     let mut state = dir.load_state().unwrap();
     assert!(poll_once(&fake, &cfg, &dir, &mut state).is_empty());
+}
+
+#[test]
+fn an_open_batch_is_read_in_full_past_one_list_page() {
+    let fake = Fake::start();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = config(&fake.url, "claude", "/tmp");
+    cfg.batch_quiet_secs = 1;
+    let dir = StateDir::new(tmp.path());
+    let mut state = State::default();
+    owner_dm(&fake);
+    let now = tg_now();
+    fake.add_message(
+        "1000002",
+        msg(3, 1000002, "what do these have in common?", now),
+    );
+    assert!(poll_once(&fake, &cfg, &dir, &mut state).is_empty());
+    // Two more cycles' worth of forwards pile on while the batch is open.
+    for ids in [4..=23, 24..=43] {
+        for id in ids {
+            fake.add_message("1000002", forward(id, 1000002, "material", now));
+        }
+        assert!(poll_once(&fake, &cfg, &dir, &mut state).is_empty());
+    }
+    fake.take_log();
+
+    wait_closed(now, &cfg);
+    let events = poll_once(&fake, &cfg, &dir, &mut state);
+    assert_eq!(shapes(&events), [(43, (3..=43).collect())]);
+    assert_eq!(state.last["1000002"], 43);
+    let offsets: Vec<Value> = Fake::calls(&fake.take_log(), "tg_messages_list")
+        .iter()
+        .map(|a| a["offsetId"].clone())
+        .collect();
+    assert_eq!(offsets, [Value::Null, json!(14)]);
+}
+
+#[test]
+fn a_comment_with_thirty_forwards_keeps_the_comment() {
+    let fake = Fake::start();
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = config(&fake.url, "claude", "/tmp");
+    let dir = StateDir::new(tmp.path());
+    let mut state = State::default();
+    owner_dm(&fake);
+    fake.add_message("1000002", msg(3, 1000002, "file these", 1_100.0));
+    for id in 4..=33 {
+        fake.add_message("1000002", forward(id, 1000002, "material", 1_100.0));
+    }
+    let events = poll_once(&fake, &cfg, &dir, &mut state);
+    assert_eq!(shapes(&events), [(33, (3..=33).collect())]);
+    assert_eq!(events[0].parts[0].text, "file these");
+}
+
+#[test]
+fn a_held_batch_is_polled_while_its_chat_shows_nothing_unread() {
+    let fake = Fake::start();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = config(&fake.url, "claude", "/tmp");
+    cfg.batch_quiet_secs = 1;
+    let dir = StateDir::new(tmp.path());
+    let mut state = State::default();
+    // Reached only through the owner-mention rule for any chat.
+    fake.set_dialog("-1000005", "chat", "Friends", 3);
+    fake.add_message("-1000005", msg(39, 1000009, "old", 900.0));
+    let now = tg_now();
+    fake.add_message(
+        "-1000005",
+        msg(40, 1000002, "@example_agent look", now - 10.0),
+    );
+    fake.add_message("-1000005", msg(41, 1000009, "chatter", now - 5.0));
+    fake.add_message("-1000005", msg(42, 1000002, "@example_agent and this", now));
+    let events = poll_once(&fake, &cfg, &dir, &mut state);
+    assert_eq!(shapes(&events), [(40, vec![])]);
+    assert!(state.held.contains("-1000005"));
+
+    // The reply to 40, or another client, leaves nothing unread.
+    fake.set_dialog("-1000005", "chat", "Friends", 0);
+    wait_closed(now, &cfg);
+    let events = poll_once(&fake, &cfg, &dir, &mut state);
+    assert_eq!(shapes(&events), [(42, vec![])]);
+    assert!(state.held.is_empty());
+    fake.take_log();
+    assert!(poll_once(&fake, &cfg, &dir, &mut state).is_empty());
+    assert!(Fake::calls(&fake.take_log(), "tg_messages_list").is_empty());
+}
+
+#[test]
+fn a_failed_lookup_lets_the_batches_before_it_through() {
+    let fake = Fake::start();
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = config(&fake.url, "claude", "/tmp");
+    let dir = StateDir::new(tmp.path());
+    let mut state = State::default();
+    owner_dm(&fake);
+    let reply = |id: i64, date: f64| {
+        let mut m = msg(id, 1000002, "about that", date);
+        m["replyTo"] = json!({"messageId": 77});
+        m
+    };
+    fake.add_message("1000002", msg(3, 1000002, "one thing", 1_100.0));
+    fake.add_message("1000002", reply(4, 1_200.0));
+    fake.world.lock().unwrap().fail_get = 1;
+    let (events, res) = poll_result(&fake, &cfg, &dir, &mut state);
+    assert!(res.is_err());
+    assert_eq!(shapes(&events), [(3, vec![])]);
+    assert_eq!(dir.load_state().unwrap().last["1000002"], 3);
+    assert_eq!(
+        shapes(&poll_once(&fake, &cfg, &dir, &mut state)),
+        [(4, vec![])]
+    );
+
+    // A batch the failed message may belong to waits for it.
+    fake.add_message("1000002", msg(5, 1000002, "and", 1_300.0));
+    fake.add_message("1000002", reply(6, 1_300.0));
+    fake.world.lock().unwrap().fail_get = 1;
+    let (events, res) = poll_result(&fake, &cfg, &dir, &mut state);
+    assert!(res.is_err());
+    assert!(events.is_empty());
+    assert_eq!(state.last["1000002"], 4);
+    assert_eq!(
+        shapes(&poll_once(&fake, &cfg, &dir, &mut state)),
+        [(6, vec![5, 6])]
+    );
 }
 
 #[test]
