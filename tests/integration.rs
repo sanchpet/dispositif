@@ -1354,12 +1354,12 @@ mod runner {
         handle(&cfg, &dir, &mut Sessions::new(), &events[1]).unwrap();
         let log = fake.take_log();
         assert_eq!(texts_to(&log, "1000002"), [("saved".into(), json!(5))]);
+        assert_eq!(Fake::calls(&log, "tg_messages_list")[0]["offsetId"], 4);
         let stdin =
             std::fs::read_to_string(tmp.path().canonicalize().unwrap().join("stdin")).unwrap();
+        // The context is what came before the batch; the batch is the request.
         assert!(
-            stdin.contains(
-                "\n[4] user1000002: save this\n[5] user1000002 (forwarded from Someone): https://example.com/x\n"
-            ),
+            stdin.contains("\n[3] user1000002: what time is it?\n\nAnswer these 2 messages"),
             "{stdin}"
         );
         assert!(
