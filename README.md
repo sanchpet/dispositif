@@ -11,6 +11,8 @@ It runs on macOS and Linux and needs an mcp-tg daemon serving MCP over streamabl
 3. An admitted message is marked read. It then gets a typing indicator, kept alive for the whole run, the last `history` messages of the chat as context, and one `claude -p --output-format json` run in the tier's working directory, with the tier's flags.
 4. The run's final text is posted as a reply to that message, in that chat. If the run fails or times out, `fallback_reply` is posted instead. If the result is empty, nothing is posted.
 
+Telegram delivers a forward with a comment, or an album, as several messages sent in the same second. Consecutive messages from one sender in one chat, each within `batch_quiet_secs` of the one before and with no one else's message between them, get one run that sees them all, forwarded ones marked, and one reply to the last. A batch waits until no further message can join it: `batch_quiet_secs` after its newest message, plus up to a second, since Telegram dates messages in whole seconds. The chat's read position stays before it meanwhile, so a restart neither loses nor repeats it, and the chat is polled even if it shows nothing unread. Each cycle reads a chat back to its read position, up to 300 messages; a gap beyond that is logged. A forward without a mention rides along with the comment that has one; a batch never mixes trust tiers.
+
 A tier with `dm_peer` splits the answer. The run must end with a JSON object `{"comment": "...", "dm": "..."}`: the comment is posted as the reply, the note goes privately to `dm_peer`, and an empty string sends nothing. Nothing reaches the reply chat unless the run succeeded and its answer parsed; a failure or unparsed text goes to `dm_peer` alone, and so does a comment Telegram refused.
 
 This is how the agent comments on a channel. A channel's posts reach its discussion group as messages sent by the channel, and a reply to one of them shows up under the post as a comment. A rule with `sender = "channel"` admits them; `min_chars` skips short ones. A long post that the client splits into several messages is answered once: the runner waits until the post is 35 seconds old, joins the consecutive parts sent within 30 seconds of each other, and replies to the last part.
@@ -65,6 +67,8 @@ The config path can also come from `DISPOSITIF_CONFIG`.
 {"event":"message","trust":"full","rule":"owner-dm","peer":"1000002","chat":"Owner","id":42,"from":"Owner","fromId":1000002,"replyTo":null,"type":"text","text":"hello"}
 ```
 
+A batch prints as one line for its last message, with all its texts in `text` and a `parts` array of `{"id", "type", "text", "forwardedFrom"}`, oldest first.
+
 When a poll fails, `watch` prints `{"event":"error","error":"..."}` once and prints `{"event":"recovered"}` once polling works again. With `--once`, a failed cycle exits with status 1.
 
 `run` logs one timestamped line to stderr per event, finished run (with cost and turns), and failure.
@@ -81,6 +85,7 @@ Top level:
 |---|---|---|
 | `mcp_url` | `http://127.0.0.1:8788` | mcp-tg streamable HTTP endpoint; plain `http://` only |
 | `interval_secs` | `10` | pause between poll cycles |
+| `batch_quiet_secs` | `5` | consecutive messages of one sender this close together are answered as one batch, once the sender has been quiet this long; `0` answers every message on its own |
 | `agent_id` | required | the agent account's Telegram user id; its own messages never match |
 | `agent_username` | required | without `@`; `@<username>` anywhere in a message (case-insensitive, not followed by a letter, digit or `_`) is a mention |
 | `claude_bin` | `claude` | path, or name looked up on `PATH` |
@@ -113,7 +118,7 @@ Top level:
 | `git_pull` | `true` runs `git pull --ff-only` in `cwd` before each run, so a tier without a shell reads current code; a failure is logged and the run goes on |
 | `instructions` | added to the prompt after the preamble |
 
-The prompt of each run is the preamble, then the tier instructions, then `Chat: <title> (peer <peer>). Recent messages:` followed by one `[id] name (reply to N): text` line per message, then `Answer this message [id] from <name>:` followed by the text. Blank lines separate the parts.
+The prompt of each run is the preamble, then the tier instructions, then `Chat: <title> (peer <peer>). Recent messages:` followed by one `[id] name (reply to N) (forwarded from X): text` line per message, then `Answer this message [id] from <name>:` followed by the text; for a batch, `Answer these N messages from <name> with one reply`, followed by one `[id] (forwarded from X): text` line per message, and the recent messages end before the batch. Further lines of a message are indented by four spaces, and those of a forwarded message also start with `> `, so no text can pass for a message line. Blank lines separate the parts.
 
 ## Running under launchd
 

@@ -14,6 +14,11 @@ pub struct Config {
     pub mcp_url: String,
     #[serde(default = "default_interval")]
     pub interval_secs: u64,
+    /// Consecutive messages of one sender, each within this many seconds of the
+    /// previous one, are answered together once the sender has been quiet this
+    /// long. 0 answers every message on its own.
+    #[serde(default = "default_batch_quiet")]
+    pub batch_quiet_secs: u64,
     pub agent_id: i64,
     pub agent_username: String,
     #[serde(default = "default_claude_bin")]
@@ -121,6 +126,11 @@ fn default_mcp_url() -> String {
 }
 fn default_interval() -> u64 {
     10
+}
+/// A forward with a comment arrives as two messages in the same second; a few
+/// seconds cover a poll landing between them without delaying every answer.
+fn default_batch_quiet() -> u64 {
+    5
 }
 fn default_claude_bin() -> String {
     "claude".into()

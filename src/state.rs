@@ -1,7 +1,7 @@
 //! Per-machine state outside the config: what has been seen, and which claude
 //! session belongs to which chat. Plain JSON, written atomically.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
@@ -22,6 +22,10 @@ pub struct State {
     /// Known ids of the agent's own messages per peer.
     #[serde(default)]
     pub agent_ids: BTreeMap<String, Vec<i64>>,
+    /// Peers whose newest messages are read but not yet consumed: polled even when
+    /// the chat shows nothing unread.
+    #[serde(default)]
+    pub held: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
