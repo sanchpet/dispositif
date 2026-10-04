@@ -370,6 +370,227 @@ fn events_before_a_failure_are_persisted() {
     fake.assert_sessions_closed(&fake.take_log());
 }
 
+fn forward(id: i64, from: i64, text: &str, date: f64) -> Value {
+    let mut m = msg(id, from, text, date);
+    m["forward"] = json!({"date": 500.0, "fromName": "Someone"});
+    m
+}
+
+/// (id, part ids) per event.
+fn shapes(events: &[Event]) -> Vec<(i64, Vec<i64>)> {
+    events
+        .iter()
+        .map(|e| (e.id, e.parts.iter().map(|p| p.id).collect()))
+        .collect()
+}
+
+fn owner_dm(fake: &Fake) {
+    fake.set_dialog("1000002", "user", "Owner", 1);
+    fake.add_message("1000002", msg(2, 1000001, "old answer", 900.0));
+}
+
+#[test]
+fn a_forward_with_its_comment_is_one_event() {
+    let fake = Fake::start();
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = config(&fake.url, "claude", "/tmp");
+    let dir = StateDir::new(tmp.path());
+    let mut state = State::default();
+    owner_dm(&fake);
+    // As the phone sends "forward with comment": the comment first, same second.
+    fake.add_message("1000002", msg(3, 1000002, "save this", 1_100.0));
+    fake.add_message(
+        "1000002",
+        forward(4, 1000002, "https://example.com/x", 1_100.0),
+    );
+
+    let events = poll_once(&fake, &cfg, &dir, &mut state);
+    assert_eq!(shapes(&events), [(4, vec![3, 4])]);
+    let ev = &events[0];
+    assert_eq!(ev.text, "save this\n\nhttps://example.com/x");
+    assert_eq!(ev.parts[0].forwarded_from, None);
+    assert_eq!(ev.parts[1].forwarded_from.as_deref(), Some("Someone"));
+    let line = serde_json::to_value(ev).unwrap();
+    assert_eq!(line["parts"][1]["forwardedFrom"], "Someone");
+    let log = fake.take_log();
+    let marked = Fake::calls(&log, "tg_messages_mark_read");
+    assert_eq!(marked, [json!({"peer": "1000002", "maxId": 4})]);
+    assert_eq!(dir.load_state().unwrap().last["1000002"], 4);
+    fake.assert_sessions_closed(&log);
+}
+
+#[test]
+fn batches_break_on_silence_and_on_anyone_else() {
+    let fake = Fake::start();
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = config(&fake.url, "claude", "/tmp");
+    let dir = StateDir::new(tmp.path());
+    let mut state = State::default();
+    owner_dm(&fake);
+    // Further apart than batch_quiet_secs.
+    fake.add_message("1000002", msg(3, 1000002, "one thing", 1_100.0));
+    fake.add_message("1000002", msg(4, 1000002, "another", 1_110.0));
+    // The agent answered in between.
+    fake.add_message("1000002", msg(5, 1000002, "a question", 1_200.0));
+    fake.add_message("1000002", msg(6, 1000001, "an answer", 1_200.0));
+    fake.add_message("1000002", msg(7, 1000002, "a follow-up", 1_201.0));
+    // Typed in a row.
+    fake.add_message("1000002", msg(8, 1000002, "first half", 1_300.0));
+    fake.add_message("1000002", msg(9, 1000002, "second half", 1_304.0));
+
+    // A group with a mention_or_reply rule for the owner and a partner.
+    fake.set_dialog("-1000003", "chat", "Project", 9);
+    fake.add_message("-1000003", msg(19, 1000004, "old", 900.0));
+    fake.add_message(
+        "-1000003",
+        msg(20, 1000002, "@example_agent what about this", 1_100.0),
+    );
+    // No mention, but it is what the comment is about.
+    fake.add_message("-1000003", forward(21, 1000002, "the material", 1_100.0));
+    fake.add_message(
+        "-1000003",
+        msg(22, 1000004, "@example_agent and me", 1_101.0),
+    );
+    fake.add_message("-1000003", msg(23, 1000009, "a stranger", 1_102.0));
+    fake.add_message(
+        "-1000003",
+        msg(24, 1000002, "@example_agent again", 1_103.0),
+    );
+    fake.add_message("-1000003", msg(25, 1000009, "chatter", 1_104.0));
+    fake.add_message("-1000003", msg(26, 1000009, "more chatter", 1_104.0));
+
+    let events = poll_once(&fake, &cfg, &dir, &mut state);
+    let dm: Vec<Event> = events
+        .iter()
+        .filter(|e| e.peer == "1000002")
+        .cloned()
+        .collect();
+    assert_eq!(
+        shapes(&dm),
+        [
+            (3, vec![]),
+            (4, vec![]),
+            (5, vec![]),
+            (7, vec![]),
+            (9, vec![8, 9])
+        ]
+    );
+    let group: Vec<Event> = events
+        .iter()
+        .filter(|e| e.peer == "-1000003")
+        .cloned()
+        .collect();
+    assert_eq!(
+        shapes(&group),
+        [(21, vec![20, 21]), (22, vec![]), (24, vec![])]
+    );
+    assert!(group.iter().all(|e| e.trust == "partner"));
+    assert_eq!(
+        state.last["-1000003"], 26,
+        "the stranger's batch is consumed"
+    );
+}
+
+#[test]
+fn a_batch_waits_for_its_sender_across_cycles() {
+    let fake = Fake::start();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = config(&fake.url, "claude", "/tmp");
+    cfg.batch_quiet_secs = 1;
+    let dir = StateDir::new(tmp.path());
+    let mut state = State::default();
+    owner_dm(&fake);
+    let now = dispositif::now();
+    fake.add_message("1000002", msg(3, 1000002, "save this", now));
+
+    assert!(poll_once(&fake, &cfg, &dir, &mut state).is_empty());
+    assert_eq!(state.last["1000002"], 2);
+    assert!(Fake::calls(&fake.take_log(), "tg_messages_mark_read").is_empty());
+
+    fake.add_message(
+        "1000002",
+        forward(4, 1000002, "https://example.com/x", now + 0.2),
+    );
+    assert!(poll_once(&fake, &cfg, &dir, &mut state).is_empty());
+    thread::sleep(std::time::Duration::from_millis(1_300));
+    let events = poll_once(&fake, &cfg, &dir, &mut state);
+    assert_eq!(shapes(&events), [(4, vec![3, 4])]);
+    assert!(poll_once(&fake, &cfg, &dir, &mut state).is_empty());
+}
+
+#[test]
+fn a_restart_inside_an_open_batch_loses_and_repeats_nothing() {
+    let fake = Fake::start();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = config(&fake.url, "claude", "/tmp");
+    cfg.batch_quiet_secs = 1;
+    let dir = StateDir::new(tmp.path());
+    owner_dm(&fake);
+    fake.add_message("1000002", msg(3, 1000002, "save this", dispositif::now()));
+    assert!(poll_once(&fake, &cfg, &dir, &mut State::default()).is_empty());
+    assert_eq!(dir.load_state().unwrap().last["1000002"], 2);
+
+    // The process dies; the next one starts from what is on disk.
+    fake.add_message(
+        "1000002",
+        forward(4, 1000002, "https://example.com/x", dispositif::now()),
+    );
+    thread::sleep(std::time::Duration::from_millis(1_300));
+    let mut state = dir.load_state().unwrap();
+    let events = poll_once(&fake, &cfg, &dir, &mut state);
+    assert_eq!(shapes(&events), [(4, vec![3, 4])]);
+
+    let mut state = dir.load_state().unwrap();
+    assert!(poll_once(&fake, &cfg, &dir, &mut state).is_empty());
+}
+
+#[test]
+fn quiet_zero_answers_every_message_alone_and_at_once() {
+    let fake = Fake::start();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = config(&fake.url, "claude", "/tmp");
+    cfg.batch_quiet_secs = 0;
+    let dir = StateDir::new(tmp.path());
+    let mut state = State::default();
+    owner_dm(&fake);
+    let now = dispositif::now();
+    fake.add_message("1000002", msg(3, 1000002, "save this", now));
+    fake.add_message("1000002", forward(4, 1000002, "https://example.com/x", now));
+
+    let events = poll_once(&fake, &cfg, &dir, &mut state);
+    assert_eq!(shapes(&events), [(3, vec![]), (4, vec![])]);
+    let line = serde_json::to_value(&events[0]).unwrap();
+    assert!(line.get("parts").is_none(), "{line}");
+    assert_eq!(
+        Fake::calls(&fake.take_log(), "tg_messages_mark_read").len(),
+        2
+    );
+}
+
+#[test]
+fn channel_posts_stay_single_for_coalesce() {
+    let fake = Fake::start();
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = config(&fake.url, "claude", "/tmp");
+    let dir = StateDir::new(tmp.path());
+    let mut state = State::default();
+    let post = |id: i64, n: i64, date: f64| {
+        json!({"id": id, "fromId": 1000007, "fromName": "Diary", "fromType": "channel",
+               "text": "x".repeat(200), "date": date, "type": "text",
+               "forward": {"channelPost": n, "from": {"username": "diary"}}})
+    };
+    fake.set_dialog("-1000006", "channel", "Diary chat", 3);
+    fake.add_message("-1000006", msg(19, 1000009, "old", 900.0));
+    fake.add_message("-1000006", post(20, 7, 1_200.0));
+    fake.add_message("-1000006", post(21, 8, 1_200.0));
+    // Young: a channel post is not held back, coalesce settles it.
+    fake.add_message("-1000006", post(22, 9, dispositif::now()));
+
+    let events = poll_once(&fake, &cfg, &dir, &mut state);
+    assert_eq!(shapes(&events), [(20, vec![]), (21, vec![]), (22, vec![])]);
+    assert_eq!(events[0].post_link.as_deref(), Some("https://t.me/diary/7"));
+}
+
 #[test]
 fn poll_failure_still_closes_session() {
     let fake = Fake::start();
@@ -440,6 +661,7 @@ mod runner {
             text: "what time is it?".into(),
             post_link: None,
             date: None,
+            parts: Vec::new(),
         }
     }
 
@@ -950,6 +1172,46 @@ mod runner {
             event()
         );
         fake.assert_sessions_closed(&fake.take_log());
+    }
+
+    #[test]
+    fn a_batch_gets_one_run_and_one_reply() {
+        let _serial = serial();
+        let (fake, tmp, cfg) =
+            setup(r#"echo '{"result":"saved","session_id":"s","is_error":false}'"#);
+        fake.set_dialog("1000002", "user", "Owner", 2);
+        fake.add_message("1000002", msg(4, 1000002, "save this", 1_200.0));
+        fake.add_message(
+            "1000002",
+            forward(5, 1000002, "https://example.com/x", 1_200.0),
+        );
+        let dir = StateDir::new(tmp.path().join("state"));
+        let events = poll_once(&fake, &cfg, &dir, &mut State::default());
+        assert_eq!(shapes(&events), [(3, vec![]), (5, vec![4, 5])]);
+        fake.take_log();
+
+        handle(&cfg, &dir, &mut Sessions::new(), &events[1]).unwrap();
+        let log = fake.take_log();
+        assert_eq!(texts_to(&log, "1000002"), [("saved".into(), json!(5))]);
+        let stdin =
+            std::fs::read_to_string(tmp.path().canonicalize().unwrap().join("stdin")).unwrap();
+        assert!(
+            stdin.contains(
+                "\n[4] user1000002: save this\n[5] user1000002 (forwarded from Someone): https://example.com/x\n"
+            ),
+            "{stdin}"
+        );
+        assert!(
+            stdin.contains("Answer these 2 messages from user1000002, sent 1970-01-01"),
+            "{stdin}"
+        );
+        assert!(
+            stdin.ends_with(
+                ":\n[4]: save this\n[5] (forwarded from Someone): https://example.com/x"
+            ),
+            "{stdin}"
+        );
+        fake.assert_sessions_closed(&log);
     }
 
     #[test]

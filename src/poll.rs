@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::allowlist::match_rule;
-use crate::config::Config;
+use crate::config::{Config, Rule};
 use crate::mcp::Mcp;
 use crate::state::{AGENT_IDS_KEPT, State, StateDir};
 use crate::tg::{DialogList, Message, MessageList};
@@ -36,10 +36,24 @@ pub struct Event {
     /// Unix seconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub date: Option<f64>,
+    /// Every message of a batch, oldest first; empty for a single message.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<Part>,
 }
 
-/// Read every dialog that may hold something new and hand each admitted message
-/// to `on_event`, marking it read. `started` is the process start (unix seconds):
+/// One message of a batch.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Part {
+    pub id: i64,
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
+    pub text: String,
+    #[serde(rename = "forwardedFrom", skip_serializing_if = "Option::is_none")]
+    pub forwarded_from: Option<String>,
+}
+
+/// Read every dialog that may hold something new and hand each admitted batch to
+/// `on_event`, marking it read. `started` is the process start (unix seconds):
 /// on first sight of a chat, older history is not replayed.
 pub fn poll(
     mcp: &mut Mcp,
@@ -95,33 +109,39 @@ pub fn poll(
         };
         state.last.insert(peer.to_owned(), last);
         let is_dm = d.kind.as_deref() == Some("user");
-        for m in msgs.iter().filter(|m| m.id > last) {
+        let fresh: Vec<&Message> = msgs.iter().filter(|m| m.id > last).collect();
+        for m in &fresh {
             learn_reply_target(mcp, cfg, peer, m, &mut agent_ids)?;
+        }
+        let admitted = fresh
+            .into_iter()
+            .map(|m| (m, match_rule(cfg, peer, m, &agent_ids, is_dm)))
+            .collect();
+        let quiet = cfg.batch_quiet_secs as f64;
+        let found = batches(admitted, quiet);
+        let (count, now) = (found.len(), crate::now());
+        let chat = d.title.as_deref().unwrap_or("").trim();
+        for (i, b) in found.into_iter().enumerate() {
+            let newest = b.newest();
+            // The sender may still be adding to it. `last` stays before it, so the
+            // wait lives in the chat itself and a restart loses nothing.
+            if i + 1 == count && still_open(newest, quiet, now) {
+                break;
+            }
             // Consumed before the mark: a failed mark must not bring the event back.
-            state.last.insert(peer.to_owned(), m.id);
-            let Some(rule) = match_rule(cfg, peer, m, &agent_ids, is_dm) else {
+            state.last.insert(peer.to_owned(), newest.id);
+            let Some(rule) = b.rule else {
                 continue;
             };
-            on_event(Event {
-                event: "message",
-                trust: rule.trust.clone(),
-                rule: rule.name.clone(),
-                peer: peer.to_owned(),
-                chat: d.title.as_deref().unwrap_or("").trim().to_owned(),
-                id: m.id,
-                from: m.from_name.clone(),
-                from_id: m.from_id,
-                reply_to: m.reply_to_id(),
-                kind: m.kind.clone(),
-                text: m.text().to_owned(),
-                post_link: m.post_link(),
-                date: m.date,
-            });
+            on_event(b.event(rule, peer, chat));
             if let Err(e) = mcp.call(
                 "tg_messages_mark_read",
-                json!({"peer": peer, "maxId": m.id}),
+                json!({"peer": peer, "maxId": newest.id}),
             ) {
-                crate::log(&format!("mark read failed peer={peer} msg={}: {e:#}", m.id));
+                crate::log(&format!(
+                    "mark read failed peer={peer} msg={}: {e:#}",
+                    newest.id
+                ));
             }
         }
         let kept: Vec<i64> = agent_ids.into_iter().collect();
@@ -131,6 +151,105 @@ pub fn poll(
             .insert(peer.to_owned(), kept[skip..].to_vec());
     }
     Ok(())
+}
+
+/// Consecutive new messages of one sender in one chat, answered as one event.
+struct Batch<'a> {
+    msgs: Vec<&'a Message>,
+    /// The rule that admitted its first admitted message, if any did.
+    rule: Option<&'a Rule>,
+}
+
+/// Group `msgs`, sorted by id, into batches. A message joins the batch before it
+/// when it has the same sender and comes within `quiet` seconds of that batch's
+/// newest message. Same-sender messages no rule admitted ride along with admitted
+/// ones: in a group the mention is in the comment, not in the forward it is about.
+fn batches<'a>(msgs: Vec<(&'a Message, Option<&'a Rule>)>, quiet: f64) -> Vec<Batch<'a>> {
+    let mut out: Vec<Batch<'a>> = Vec::new();
+    for (m, rule) in msgs {
+        match out.last_mut() {
+            Some(b) if b.takes(m, rule, quiet) => {
+                b.msgs.push(m);
+                b.rule = b.rule.or(rule);
+            }
+            _ => out.push(Batch {
+                msgs: vec![m],
+                rule,
+            }),
+        }
+    }
+    out
+}
+
+/// Whether the sender of `newest` may still be adding to its batch.
+fn still_open(newest: &Message, quiet: f64, now: f64) -> bool {
+    quiet > 0.0 && !newest.from_channel() && newest.date.is_some_and(|d| now - d < quiet)
+}
+
+impl<'a> Batch<'a> {
+    fn newest(&self) -> &'a Message {
+        self.msgs.last().expect("a batch is never empty")
+    }
+
+    /// Channel posts stay single: `runner::coalesce` joins a split post. A batch
+    /// runs under one trust, so a message admitted under another starts a new one.
+    fn takes(&self, m: &Message, rule: Option<&Rule>, quiet: f64) -> bool {
+        let prev = self.newest();
+        let same_trust = match (self.rule, rule) {
+            (Some(a), Some(b)) => a.trust == b.trust,
+            _ => true,
+        };
+        quiet > 0.0
+            && !m.from_channel()
+            && m.from_id.is_some()
+            && (m.from_id, &m.from_type) == (prev.from_id, &prev.from_type)
+            && same_trust
+            && matches!((prev.date, m.date), (Some(a), Some(b)) if b - a <= quiet)
+    }
+
+    /// The event for this batch: its newest message, with every part listed when
+    /// there is more than one.
+    fn event(&self, rule: &Rule, peer: &str, chat: &str) -> Event {
+        let m = self.newest();
+        let mut ev = Event {
+            event: "message",
+            trust: rule.trust.clone(),
+            rule: rule.name.clone(),
+            peer: peer.to_owned(),
+            chat: chat.to_owned(),
+            id: m.id,
+            from: m.from_name.clone(),
+            from_id: m.from_id,
+            reply_to: m.reply_to_id(),
+            kind: m.kind.clone(),
+            text: m.text().to_owned(),
+            post_link: m.post_link(),
+            date: m.date,
+            parts: Vec::new(),
+        };
+        if self.msgs.len() > 1 {
+            let texts: Vec<&str> = self
+                .msgs
+                .iter()
+                .map(|m| m.text())
+                .filter(|t| !t.is_empty())
+                .collect();
+            ev.text = texts.join("\n\n");
+            // A channel post forwarded by a user is one part here, not a post to coalesce.
+            ev.post_link = None;
+            ev.parts = self
+                .msgs
+                .iter()
+                .map(|m| Part {
+                    id: m.id,
+                    kind: m.kind.clone(),
+                    text: m.text().to_owned(),
+                    forwarded_from: m.forwarded_from(),
+                })
+                .collect();
+        }
+        ev
+    }
 }
 
 /// A reply may point at an agent message older than the fetched window: look it up.
@@ -282,6 +401,44 @@ mod tests {
                 Some(Change::Failed("poll: initialize".into())),
             ]
         );
+    }
+
+    #[test]
+    fn a_batch_keeps_one_trust() {
+        let rule = |trust: &str| Rule {
+            name: trust.into(),
+            peer: "*".into(),
+            from: vec![5],
+            sender: Default::default(),
+            trigger: crate::config::Trigger::Any,
+            min_chars: 0,
+            trust: trust.into(),
+        };
+        let (a, b) = (rule("a"), rule("b"));
+        let msgs: Vec<Message> = (1..=4)
+            .map(|id| Message {
+                id,
+                from_id: Some(5),
+                date: Some(100.0),
+                ..Default::default()
+            })
+            .collect();
+        let tagged = vec![
+            (&msgs[0], None),
+            (&msgs[1], Some(&a)),
+            (&msgs[2], Some(&b)),
+            (&msgs[3], None),
+        ];
+        let got: Vec<(Vec<i64>, Option<&str>)> = batches(tagged, 5.0)
+            .iter()
+            .map(|b| {
+                (
+                    b.msgs.iter().map(|m| m.id).collect(),
+                    b.rule.map(|r| r.trust.as_str()),
+                )
+            })
+            .collect();
+        assert_eq!(got, [(vec![1, 2], Some("a")), (vec![3, 4], Some("b"))]);
     }
 
     #[test]

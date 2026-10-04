@@ -5,6 +5,10 @@
 # mcp-tg daemon logged in as the agent's Telegram account (streamable HTTP).
 mcp_url = "http://127.0.0.1:8788"
 interval_secs = 10
+# Consecutive messages of one sender, each within this many seconds of the one
+# before (a forward and its comment, an album), get one run and one reply once
+# the sender has been quiet this long. 0 answers every message on its own.
+batch_quiet_secs = 5
 
 # The agent's own Telegram account: its messages never trigger a run, and
 # "@example_agent" in a message counts as a mention.

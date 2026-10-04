@@ -34,6 +34,13 @@ fn base_is_valid_with_defaults() {
     assert_eq!(cfg.history, 15);
     assert_eq!(cfg.session_ttl_secs, 86_400);
     assert_eq!(cfg.claude_bin, "claude");
+    assert_eq!(cfg.batch_quiet_secs, 5);
+}
+
+#[test]
+fn batching_can_be_turned_off() {
+    let cfg = Config::parse(&format!("batch_quiet_secs = 0\n{BASE}")).unwrap();
+    assert_eq!(cfg.batch_quiet_secs, 0);
 }
 
 #[test]
