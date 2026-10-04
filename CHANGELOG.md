@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/sanchpet/dispositif/compare/v0.3.0...v0.4.0) (2026-10-04)
+
+
+### Features
+
+* **poll:** answer a forward and its comment with one run ([#10](https://github.com/sanchpet/dispositif/issues/10)) ([2b7de90](https://github.com/sanchpet/dispositif/commit/2b7de9058e9ec99e65e0026e2cbf3dab626111eb))
+
 ## [0.3.0](https://github.com/sanchpet/dispositif/compare/v0.2.1...v0.3.0) (2026-09-30)
 
 
