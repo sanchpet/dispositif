@@ -47,7 +47,8 @@ pub struct ReplyTo {
 }
 
 /// A forwarded message's origin. A channel post auto-forwarded into its discussion
-/// group carries the post number and the channel's username.
+/// group carries the post number and the channel's username; a forward from a user
+/// who hides their account carries only the name.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Forward {
@@ -55,6 +56,8 @@ pub struct Forward {
     pub channel_post: Option<i64>,
     #[serde(default)]
     pub from: Option<ForwardFrom>,
+    #[serde(default)]
+    pub from_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -96,6 +99,25 @@ impl Message {
             (None, None) => None,
         }
     }
+
+    /// Whom a forwarded message came from, as far as the forward says; None when
+    /// the message is not a forward.
+    pub fn forwarded_from(&self) -> Option<String> {
+        let f = self.forward.as_ref()?;
+        let who = f
+            .from_name
+            .clone()
+            .filter(|n| !n.is_empty())
+            .or_else(|| {
+                let user = f.from.as_ref()?.username.as_ref()?;
+                Some(format!("@{user}"))
+            })
+            .unwrap_or_else(|| "an unknown sender".into());
+        Some(match self.post_link() {
+            Some(link) => format!("{who}, {link}"),
+            None => who,
+        })
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -134,5 +156,27 @@ mod tests {
         );
         let plain: Message = serde_json::from_value(serde_json::json!({"id": 1})).unwrap();
         assert_eq!(plain.post_link(), None);
+    }
+
+    #[test]
+    fn forward_origins() {
+        let m = |fwd: serde_json::Value| -> Option<String> {
+            serde_json::from_value::<Message>(serde_json::json!({"id": 1, "forward": fwd}))
+                .unwrap()
+                .forwarded_from()
+        };
+        assert_eq!(
+            m(serde_json::json!({"date": 900, "fromName": "Someone"})).as_deref(),
+            Some("Someone")
+        );
+        assert_eq!(
+            m(serde_json::json!({"channelPost": 7, "from": {"username": "diary"}})).as_deref(),
+            Some("@diary, https://t.me/diary/7")
+        );
+        assert_eq!(
+            m(serde_json::json!({"date": 900})).as_deref(),
+            Some("an unknown sender")
+        );
+        assert_eq!(m(serde_json::Value::Null), None);
     }
 }

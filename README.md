@@ -113,7 +113,7 @@ Top level:
 | `git_pull` | `true` runs `git pull --ff-only` in `cwd` before each run, so a tier without a shell reads current code; a failure is logged and the run goes on |
 | `instructions` | added to the prompt after the preamble |
 
-The prompt of each run is the preamble, then the tier instructions, then `Chat: <title> (peer <peer>). Recent messages:` followed by one `[id] name (reply to N): text` line per message, then `Answer this message [id] from <name>:` followed by the text. Blank lines separate the parts.
+The prompt of each run is the preamble, then the tier instructions, then `Chat: <title> (peer <peer>). Recent messages:` followed by one `[id] name (reply to N) (forwarded from X): text` line per message, then `Answer this message [id] from <name>:` followed by the text. Blank lines separate the parts.
 
 ## Running under launchd
 

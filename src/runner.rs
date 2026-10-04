@@ -394,9 +394,9 @@ impl Typing {
     }
 }
 
-/// Context lines `[id] name (reply to N): text`, oldest first, up to `upto`.
-/// Lines from senders outside the allowlist are marked, so a run can tell text
-/// it may act on from text anyone in a group could have planted.
+/// Context lines `[id] name (reply to N) (forwarded from X): text`, oldest first, up
+/// to `upto`. Lines from senders outside the allowlist are marked, so a run can tell
+/// text it may act on from text anyone in a group could have planted.
 pub fn format_history(mut msgs: Vec<Message>, upto: i64, trusted: &HashSet<i64>) -> String {
     msgs.sort_by_key(|m| m.id);
     msgs.iter()
@@ -407,10 +407,6 @@ pub fn format_history(mut msgs: Vec<Message>, upto: i64, trusted: &HashSet<i64>)
                 (_, Some(id)) => id.to_string(),
                 _ => "?".to_owned(),
             };
-            let body = match m.text() {
-                "" => format!("[{}]", m.kind.as_deref().unwrap_or("message")),
-                t => t.to_owned(),
-            };
             let re = m
                 .reply_to_id()
                 .map(|id| format!(" (reply to {id})"))
@@ -419,10 +415,28 @@ pub fn format_history(mut msgs: Vec<Message>, upto: i64, trusted: &HashSet<i64>)
                 Some(id) if trusted.contains(&id) => "",
                 _ => " (outside allowlist)",
             };
-            format!("[{}] {who}{mark}{re}: {body}", m.id)
+            format!(
+                "[{}] {who}{mark}{re}{}: {}",
+                m.id,
+                forwarded(m.forwarded_from().as_deref()),
+                body(m.text(), m.kind.as_deref())
+            )
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// A message's text, or a placeholder like `[photo]` for media without a caption.
+fn body(text: &str, kind: Option<&str>) -> String {
+    match text {
+        "" => format!("[{}]", kind.unwrap_or("message")),
+        t => t.to_owned(),
+    }
+}
+
+fn forwarded(from: Option<&str>) -> String {
+    from.map(|f| format!(" (forwarded from {f})"))
+        .unwrap_or_default()
 }
 
 pub fn build_prompt(cfg: &Config, tier: &Tier, ev: &Event, ctx: &str) -> String {
@@ -670,11 +684,13 @@ mod tests {
             {"id": 12, "fromId": 7, "text": "later"},
             {"id": 10, "fromName": "Ann", "fromId": 5, "text": "hi"},
             {"id": 11, "fromName": "Bob", "type": "photo", "replyTo": {"messageId": 10}},
+            {"id": 9, "fromName": "Ann", "fromId": 5, "text": "look",
+             "forward": {"date": 100, "fromName": "Someone"}},
         ]))
         .unwrap();
         assert_eq!(
             format_history(msgs, 11, &HashSet::from([5])),
-            "[10] Ann: hi\n[11] Bob (outside allowlist) (reply to 10): [photo]"
+            "[9] Ann (forwarded from Someone): look\n[10] Ann: hi\n[11] Bob (outside allowlist) (reply to 10): [photo]"
         );
     }
 
